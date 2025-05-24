@@ -1335,8 +1335,7 @@ static int haptic_file_mmap(struct file *filp, struct vm_area_struct *vma)
 	vm_flags_t vm_flags = calc_vm_prot_bits(PROT_READ|PROT_WRITE, 0) |
 		calc_vm_flag_bits(filp, MAP_SHARED);
 #elif (LINUX_VERSION_CODE > KERNEL_VERSION(6, 6, 0))
-	vm_flags_t vm_flags = calc_vm_prot_bits(PROT_READ|PROT_WRITE, 0) |
-		__calc_vm_flag_bits(MAP_SHARED);
+	vm_flags_t vm_flags = calc_vm_prot_bits(PROT_READ|PROT_WRITE, 0) | VM_SHARED;
 #else
 	vm_flags_t vm_flags = calc_vm_prot_bits(PROT_READ|PROT_WRITE, 0) |
 		calc_vm_flag_bits(MAP_SHARED);
