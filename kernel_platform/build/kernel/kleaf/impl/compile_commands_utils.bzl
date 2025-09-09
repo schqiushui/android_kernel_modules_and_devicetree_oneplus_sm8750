@@ -55,6 +55,9 @@ def _get_step(ctx, compile_commands_parent):
                 --include '*.c' \\
                 --include '*.S' \\
                 --include '*.h' \\
+                --include '*.cflags' \\
+                --include '*.asflags' \\
+                --include '*.ldflags' \\
                 --exclude '*' ${{COMMON_OUT_DIR}}/ {common_out_dir}/
             sed -e "s:${{COMMON_OUT_DIR}}:\\${{COMMON_OUT_DIR}}:g;s:${{ROOT_DIR}}:\\${{ROOT_DIR}}:g" \\
                 {compile_commands_parent}/compile_commands.json > {compile_commands_with_vars}

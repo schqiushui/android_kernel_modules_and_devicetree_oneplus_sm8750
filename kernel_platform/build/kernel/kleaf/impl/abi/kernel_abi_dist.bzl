@@ -145,17 +145,17 @@ def kernel_abi_dist(
         no_ignore_diff_target_script = ""
         if no_ignore_diff_target != None:
             no_ignore_diff_target_script = """
-                echo "WARNING: Use 'tools/bazel run {label}' to fail on ABI difference." >&2
+                echo "WARNING: Use 'tools/bazel run {label}' to see and fail on ABI difference." >&2
             """.format(
                 label = native.package_relative_label(no_ignore_diff_target),
             )
         exec_macro_script += """
           # Store return code of diff_abi and ignore if diff was found
             rc=0
-            $(rootpath {diff_stg}) || rc=$?
+            $(rootpath {diff_stg}) > /dev/null 2>&1 || rc=$?
 
             if [[ $rc -eq {change_code} ]]; then
-                echo "WARNING: difference above is ignored." >&2
+                echo "WARNING: ABI DIFFERENCES HAVE BEEN DETECTED!" >&2
                 {no_ignore_diff_target_script}
             else
                 exit $rc

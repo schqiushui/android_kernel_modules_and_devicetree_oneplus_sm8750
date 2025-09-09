@@ -241,7 +241,7 @@ def _create_ddk_config_info(ctx):
     return ddk_config_subrule(
         kconfig_targets = [ctx.attr.kconfig] if ctx.attr.kconfig else [],
         defconfig_targets = [ctx.attr.defconfig] if ctx.attr.defconfig else [],
-        deps = ctx.attr.module_deps + ctx.attr.module_hdrs + ctx.attr.module_textual_hdrs,
+        deps = ctx.attr.module_deps + ctx.attr.module_hdrs,
         extra_defconfigs = ctx.attr.kernel_build[KernelBuildExtModuleInfo].ddk_module_defconfig_fragments,
     )
 
@@ -276,8 +276,8 @@ for its format.
         ),
         # Needed to compose DdkConfigInfo
         "module_deps": attr.label_list(),
-        "module_hdrs": attr.label_list(allow_files = [".h"]),
-        "module_textual_hdrs": attr.label_list(allow_files = True),
+        # allow_files = True because https://github.com/bazelbuild/bazel/issues/7516
+        "module_hdrs": attr.label_list(allow_files = True),
         "generate_btf": attr.bool(
             default = False,
             doc = "See [kernel_module.generate_btf](#kernel_module-generate_btf)",

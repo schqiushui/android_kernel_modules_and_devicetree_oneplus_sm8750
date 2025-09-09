@@ -123,7 +123,6 @@ class KleafProjectSetterTest(parameterized.TestCase):
             temp_dir = pathlib.Path(temp_dir)
             ddk_workspace = temp_dir / "ddk_workspace"
             kleaf_repo = temp_dir / "kleaf_repo"
-            prebuilts_dir = temp_dir / "prebuilts_dir"
             try:
                 init_ddk.KleafProjectSetter(
                     build_id=None,
@@ -131,7 +130,7 @@ class KleafProjectSetterTest(parameterized.TestCase):
                     ddk_workspace=ddk_workspace,
                     kleaf_repo=kleaf_repo,
                     local=False,
-                    prebuilts_dir=prebuilts_dir,
+                    prebuilts_dir=None,
                     url_fmt=None,
                     superproject_tool="repo",
                     sync=False,
@@ -141,7 +140,6 @@ class KleafProjectSetterTest(parameterized.TestCase):
             finally:
                 self.assertTrue(ddk_workspace.exists())
                 self.assertTrue(kleaf_repo.exists())
-                self.assertTrue(prebuilts_dir.exists())
 
     def test_tools_bazel_symlink(self):
         """Tests a symlink to tools/bazel is correctly created."""
@@ -173,9 +171,9 @@ class KleafProjectSetterTest(parameterized.TestCase):
         expected: str,
     ):
         """Helper method for checking path in a prebuilt extension."""
-        download_configs = prebuilts_dir / "download_configs.json"
-        download_configs.parent.mkdir(parents=True)
-        download_configs.write_text("{}")
+        ci_target_mapping = prebuilts_dir / "ci_target_mapping.json"
+        ci_target_mapping.parent.mkdir(parents=True)
+        ci_target_mapping.write_text("{}")
         try:
             init_ddk.KleafProjectSetter(
                 build_id=None,
@@ -218,6 +216,95 @@ class KleafProjectSetterTest(parameterized.TestCase):
                 expected=str(prebuilts_dir_abs),
             )
 
+    def _run_test_module_bazel_for_prebuilts_download_configs(
+        self,
+        ddk_workspace: pathlib.Path,
+        prebuilts_dir: pathlib.Path,
+        expected: str,
+    ):
+        """Helper method for checking path in a prebuilt extension."""
+        download_configs = prebuilts_dir / "download_configs.json"
+        download_configs.parent.mkdir(parents=True)
+        download_configs.write_text("{}")
+        try:
+            init_ddk.KleafProjectSetter(
+                build_id=None,
+                build_target=None,
+                ddk_workspace=ddk_workspace,
+                kleaf_repo=None,
+                local=False,
+                prebuilts_dir=prebuilts_dir,
+                url_fmt=None,
+                superproject_tool="repo",
+                sync=False,
+            ).run()
+        except:  # pylint: disable=bare-except
+            pass
+        finally:
+            module_bazel = ddk_workspace / init_ddk._MODULE_BAZEL_FILE
+            self.assertTrue(module_bazel.exists())
+            content = module_bazel.read_text()
+            self.assertTrue(f'local_artifact_path = "{expected}",' in content)
+
+    def test_module_bazel_for_prebuilts_download_configs(self):
+        """Tests prebuilts setup is correct for relative and non-relative to workspace dirs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ddk_workspace = pathlib.Path(tmp) / "ddk_workspace"
+            # Verify the right local_artifact_path is set for prebuilts
+            #  in a relative to workspace directory.
+            prebuilts_dir_rel = ddk_workspace / "prebuilts_dir"
+            self._run_test_module_bazel_for_prebuilts_download_configs(
+                ddk_workspace=ddk_workspace,
+                prebuilts_dir=prebuilts_dir_rel,
+                expected="prebuilts_dir",
+            )
+
+            # Verify the right local_artifact_path is set for prebuilts
+            #  in a non-relative to workspace directory.
+            prebuilts_dir_abs = pathlib.Path(tmp) / "prebuilts_dir"
+            self._run_test_module_bazel_for_prebuilts_download_configs(
+                ddk_workspace=ddk_workspace,
+                prebuilts_dir=prebuilts_dir_abs,
+                expected=str(prebuilts_dir_abs),
+            )
+
+    def test_repo_name(self):
+        """Tests that repo_name in ci_target_mapping.json is respected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ddk_workspace = pathlib.Path(tmp) / "ddk_workspace"
+            # Verify the right local_artifact_path is set for prebuilts
+            #  in a relative to workspace directory.
+            prebuilts_dir = ddk_workspace / "prebuilts_dir"
+
+            ci_target_mapping = prebuilts_dir / "ci_target_mapping.json"
+            ci_target_mapping.parent.mkdir(parents=True)
+            ci_target_mapping.write_text(f"""{{
+                "repo_name": "my_gki_prebuilts"
+            }}""")
+            try:
+                init_ddk.KleafProjectSetter(
+                    build_id=None,
+                    build_target=None,
+                    ddk_workspace=ddk_workspace,
+                    kleaf_repo=None,
+                    local=False,
+                    prebuilts_dir=prebuilts_dir,
+                    url_fmt=None,
+                    superproject_tool="repo",
+                    sync=False,
+                ).run()
+            except:  # pylint: disable=bare-except
+                pass
+            finally:
+                module_bazel = ddk_workspace / init_ddk._MODULE_BAZEL_FILE
+                self.assertTrue(module_bazel.exists())
+                content = module_bazel.read_text()
+                self.assertIn(textwrap.dedent("""\
+                    kernel_prebuilt_ext.declare_kernel_prebuilts(
+                        name = "my_gki_prebuilts",
+                        local_artifact_path = "prebuilts_dir",
+                    """), content)
+
     def test_download_works_for_local_file(self):
         """Tests that local files can be downloaded."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -244,6 +331,36 @@ class KleafProjectSetterTest(parameterized.TestCase):
             self.assertEqual(out_file.read_text(), "Hello World!")
 
     def test_non_mandatory_doesnt_fail(self):
+        """Tests that optional files don't produce errors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ddk_workspace = pathlib.Path(tmp) / "ddk_workspace"
+            prebuilts_dir = ddk_workspace / "prebuilts_dir"
+            ci_target_mapping = ddk_workspace / "ci_target_mapping.json"
+            ci_target_mapping.parent.mkdir(parents=True, exist_ok=True)
+            ci_target_mapping.write_text(
+                json.dumps({"download_configs": {
+                    "non-existent-file": {
+                        "target_suffix": "non-existent-file",
+                        "mandatory": False,
+                        "remote_filename_fmt": "non-existent-file",
+                    }
+                }})
+            )
+            with open(ci_target_mapping, "r", encoding="utf-8"):
+                url_fmt = f"file://{str(ci_target_mapping.parent)}/{{filename}}"
+                init_ddk.KleafProjectSetter(
+                    build_id="12345",
+                    build_target=None,
+                    ddk_workspace=ddk_workspace,
+                    kleaf_repo=None,
+                    local=False,
+                    prebuilts_dir=prebuilts_dir,
+                    url_fmt=url_fmt,
+                    superproject_tool="repo",
+                    sync=False,
+                ).run()
+
+    def test_non_mandatory_doesnt_fail_download_configs(self):
         """Tests that optional files don't produce errors."""
         with tempfile.TemporaryDirectory() as tmp:
             ddk_workspace = pathlib.Path(tmp) / "ddk_workspace"
@@ -358,6 +475,94 @@ class KleafProjectSetterTest(parameterized.TestCase):
                              wanted_content)
 
     def test_update_manifest(self):
+        """Tests that the repo manifest is updated correctly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            ddk_workspace = tmp / "ddk_workspace"
+
+            repo_manifest = ddk_workspace / ".repo/manifests/default.xml"
+            repo_manifest.parent.mkdir(parents=True, exist_ok=True)
+            repo_manifest.write_text(textwrap.dedent("""\
+                <?xml version="1.0" encoding="UTF-8"?>
+                <manifest>
+                    <useless                    garbage="true" />
+                </manifest>
+            """))
+
+            remote_prebuilts_dir = tmp / "remote_prebuilts_dir"
+            remote_prebuilts_dir.mkdir(parents=True, exist_ok=True)
+            ci_target_mapping = remote_prebuilts_dir / "ci_target_mapping.json"
+            ci_target_mapping.write_text(json.dumps({"download_configs": {
+                "manifest.xml": {
+                    "target_suffix": "init_ddk_files",
+                    "mandatory": False,
+                    "remote_filename_fmt": "manifest_{build_number}.xml",
+                },
+            }}))
+
+            build_id = "12345"
+            downloaded_manifest = (remote_prebuilts_dir /
+                                   f"manifest_{build_id}.xml")
+            source = (pathlib.Path(__file__).parent /
+                      "test_data/sample_manifest.xml")
+            shutil.copy(source, downloaded_manifest)
+
+            init_ddk.KleafProjectSetter(
+                build_id=build_id,
+                build_target=None,
+                ddk_workspace=ddk_workspace,
+                kleaf_repo=ddk_workspace / "external/kleaf",
+                local=False,
+                prebuilts_dir=ddk_workspace / "prebuilts_dir",
+                url_fmt=f"file://{str(remote_prebuilts_dir)}/{{filename}}",
+                superproject_tool="repo",
+                sync=False,
+            ).run()
+
+            with xml.dom.minidom.parse(
+                    str(ddk_workspace / ".repo/manifests/kleaf.xml")) as dom:
+
+                root: xml.dom.minidom.Element = dom.documentElement
+                self.assertFalse(root.getElementsByTagName("superproject"))
+                self.assertFalse(root.getElementsByTagName("default"))
+                self.assertTrue(root.getElementsByTagName("remote"))
+
+                projects = root.getElementsByTagName("project")
+                project_paths = []
+                links = {}
+                for project in projects:
+                    project_path = pathlib.Path(project.getAttribute("path")
+                                                or project.getAttribute("name"))
+                    project_paths.append(project_path)
+                    for link in project.getElementsByTagName("linkfile"):
+                        src = project_path / link.getAttribute("src")
+                        dest = pathlib.Path(link.getAttribute("dest"))
+                        links[dest] = src
+
+                # Check <project> paths are fixed
+                self.assertCountEqual(
+                    project_paths, [
+                        pathlib.Path("external/kleaf/build/kernel"),
+                        pathlib.Path("external/bazel-skylib"),
+                    ])
+
+                # Check <linkfile> is fixed
+                # pylint: disable=line-too-long
+                self.assertEqual(links, {
+                    pathlib.Path("tools/bazel"): pathlib.Path("external/kleaf/build/kernel/kleaf/bazel.sh"),
+                    pathlib.Path("external/kleaf/MODULE.bazel"): pathlib.Path("external/kleaf/build/kernel/kleaf/bzlmod/bazel.MODULE.bazel")
+                })
+
+            with xml.dom.minidom.parse(
+                    str(ddk_workspace / ".repo/manifests/default.xml")) as dom:
+                root: xml.dom.minidom.Element = dom.documentElement
+                includes = root.getElementsByTagName("include")
+                include_names = [
+                    include.getAttribute("name") for include in includes
+                ]
+                self.assertListEqual(include_names, ["kleaf.xml"])
+
+    def test_update_manifest_download_configs(self):
         """Tests that the repo manifest is updated correctly."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)

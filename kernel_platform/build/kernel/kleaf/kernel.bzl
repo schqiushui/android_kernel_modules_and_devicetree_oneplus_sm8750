@@ -40,6 +40,7 @@ load("//build/kernel/kleaf/impl:ddk/ddk_module.bzl", _ddk_module = "ddk_module")
 load("//build/kernel/kleaf/impl:ddk/ddk_submodule.bzl", _ddk_submodule = "ddk_submodule")
 load("//build/kernel/kleaf/impl:ddk/ddk_uapi_headers.bzl", _ddk_uapi_headers = "ddk_uapi_headers")
 load("//build/kernel/kleaf/impl:gki_artifacts.bzl", _gki_artifacts = "gki_artifacts", _gki_artifacts_prebuilts = "gki_artifacts_prebuilts")
+load("//build/kernel/kleaf/impl:image/dtb_image.bzl", _dtb_image = "dtb_image")
 load("//build/kernel/kleaf/impl:image/kernel_images.bzl", _kernel_images = "kernel_images")
 load("//build/kernel/kleaf/impl:image/super_image.bzl", _super_image = "super_image", _unsparsed_image = "unsparsed_image")
 load("//build/kernel/kleaf/impl:kernel_build.bzl", _kernel_build_macro = "kernel_build")
@@ -54,6 +55,7 @@ load("//build/kernel/kleaf/impl:kernel_modules_install.bzl", _kernel_modules_ins
 load("//build/kernel/kleaf/impl:kernel_uapi_headers_cc_library.bzl", _kernel_uapi_headers_cc_library = "kernel_uapi_headers_cc_library")
 load("//build/kernel/kleaf/impl:kernel_unstripped_modules_archive.bzl", _kernel_unstripped_modules_archive = "kernel_unstripped_modules_archive")
 load("//build/kernel/kleaf/impl:merged_kernel_uapi_headers.bzl", _merged_kernel_uapi_headers = "merged_kernel_uapi_headers")
+load("//build/kernel/kleaf/impl/testing:kernel_unit_test.bzl", _kunit_test = "kunit_test")
 
 # Re-exports. This is the list of public rules and macros.
 android_filegroup = _android_filegroup
@@ -66,6 +68,7 @@ ddk_uapi_headers = _ddk_uapi_headers
 dependency_graph = _dependency_graph
 dependency_graph_drawer = _dependency_graph_drawer
 dependency_graph_extractor = _dependency_graph_extractor
+dtb_image = _dtb_image
 extract_symbols = _extract_symbols
 gki_artifacts = _gki_artifacts
 gki_artifacts_prebuilts = _gki_artifacts_prebuilts
@@ -90,3 +93,4 @@ unsparsed_image = _unsparsed_image
 
 # Tests
 kernel_module_test = _kernel_module_test
+kunit_test = _kunit_test

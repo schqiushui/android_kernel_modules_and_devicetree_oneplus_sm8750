@@ -70,6 +70,9 @@ def _boot_images_impl(ctx):
     if ctx.attr.gki_ramdisk_prebuilt_binary:
         inputs += [ctx.file.gki_ramdisk_prebuilt_binary]
 
+    if ctx.attr.dtb_image:
+        inputs.append(ctx.file.dtb_image)
+
     transitive_inputs = [
         kernel_build_outs,
         ctx.attr.kernel_build[KernelSerializedEnvInfo].inputs,
@@ -165,6 +168,12 @@ def _boot_images_impl(ctx):
                BUILD_INITRAMFS=
                INITRAMFS_STAGING_DIR=
         """
+    if ctx.attr.dtb_image:
+        boot_flag_cmd += """
+            DTB_IMAGE={dtb_image}
+        """.format(
+            dtb_image = utils.optional_path(ctx.file.dtb_image),
+        )
     if ctx.attr.unpack_ramdisk:
         boot_flag_cmd += """
             if [[ -n ${SKIP_UNPACKING_RAMDISK} ]]; then
@@ -316,6 +325,13 @@ Execute `build_boot_images` in `build_utils.sh`.""",
         ),
         "ramdisk_compression_args": attr.string(
             doc = "Command line arguments passed only to lz4 command to control compression level.",
+        ),
+        "dtb_image": attr.label(
+            doc = """A dtb.img to packaged.
+                If this is set, then *.dtb from `kernel_build` are ignored.
+
+                See [`dtb_image`](#dtb_image).""",
+            allow_single_file = True,
         ),
         "_debug_print_scripts": attr.label(
             default = "//build/kernel/kleaf:debug_print_scripts",

@@ -66,10 +66,18 @@ def _vendor_dlkm_image_impl(ctx):
     outputs = []
     vendor_dlkm_flatten_img = None
     vendor_dlkm_flatten_img_name = None
+    vendor_dlkm_flatten_modules_load = None
+    vendor_dlkm_flatten_modules_load_name = None
     if ctx.attr.build_vendor_dlkm_flatten_image:
         vendor_dlkm_flatten_img = ctx.actions.declare_file("{}/vendor_dlkm.flatten.img".format(ctx.label.name))
         outputs.append(vendor_dlkm_flatten_img)
         vendor_dlkm_flatten_img_name = "vendor_dlkm.flatten.img"
+
+        vendor_dlkm_flatten_modules_load_name = "vendor_dlkm.flatten.modules.load"
+        vendor_dlkm_flatten_modules_load = ctx.actions.declare_file(
+            "{}/{}".format(ctx.label.name, vendor_dlkm_flatten_modules_load_name),
+        )
+        outputs.append(vendor_dlkm_flatten_modules_load)
 
     command += """
             # Use `strip_modules` intead of relying on this.
@@ -88,6 +96,7 @@ def _vendor_dlkm_image_impl(ctx):
               mv "${{DIST_DIR}}/vendor_dlkm.img" {vendor_dlkm_img}
                if [[ {build_flatten_image} == "1" ]]; then
                 mv "${{DIST_DIR}}/{vendor_dlkm_flatten_img_name}" {vendor_dlkm_flatten_img}
+                mv "${{DIST_DIR}}/{vendor_dlkm_flatten_modules_load_name}" {vendor_dlkm_flatten_modules_load}
                fi
               mv "${{DIST_DIR}}/vendor_dlkm.modules.load" {vendor_dlkm_modules_load}
               if [[ -f "${{DIST_DIR}}/vendor_dlkm_staging_archive.tar.gz" ]]; then
@@ -108,6 +117,8 @@ def _vendor_dlkm_image_impl(ctx):
         vendor_dlkm_staging_dir = vendor_dlkm_staging_dir,
         vendor_dlkm_flatten_img = vendor_dlkm_flatten_img.path if vendor_dlkm_flatten_img else "/dev/null",
         vendor_dlkm_flatten_img_name = vendor_dlkm_flatten_img_name,
+        vendor_dlkm_flatten_modules_load = vendor_dlkm_flatten_modules_load.path if vendor_dlkm_flatten_modules_load else "/dev/null",
+        vendor_dlkm_flatten_modules_load_name = vendor_dlkm_flatten_modules_load_name,
         vendor_dlkm_img = vendor_dlkm_img.path,
         vendor_dlkm_modules_load = vendor_dlkm_modules_load.path,
         vendor_dlkm_modules_blocklist = vendor_dlkm_modules_blocklist.path,

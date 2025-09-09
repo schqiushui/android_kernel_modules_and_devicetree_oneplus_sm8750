@@ -246,14 +246,14 @@ def _gen_ddk_makefile_for_module(
     os.makedirs(kbuild.parent, exist_ok=True)
 
     # rel to this package
-    out_cflags_subpath = kernel_module_out.with_suffix(".cflags")
+    gen_cflags_subpath = kernel_module_out.with_suffix(".cflags_shipped")
 
     # Output cflags file path
-    out_cflags_path = output_makefiles / out_cflags_subpath
+    out_cflags_path = output_makefiles / gen_cflags_subpath
 
     # For modinfo tagging
     _handle_ddk_marker(rel_srcs, kernel_module_out,
-        out_cflags_path, package / out_cflags_subpath.parent)
+        out_cflags_path, package / gen_cflags_subpath.parent)
 
     copts = json.load(copt_file) if copt_file else None
 
@@ -320,7 +320,8 @@ def _gen_ddk_makefile_for_module(
                 # $(ROOT_DIR)/<package> (aka $ROOT_DIR/<ext_mod>) and fix up
                 # .cflags files there before building.
                 out_file.write(textwrap.dedent(f"""\
-                    CFLAGS_{out} += @$(ROOT_DIR)/{package / out_cflags_subpath}
+                    CFLAGS_{out} += @$(obj)/{gen_cflags_subpath.with_suffix(".cflags").name}
+                    $(obj)/{out}: $(obj)/{gen_cflags_subpath.with_suffix(".cflags").name}
                     """))
 
             if config is not None and value != True: # pylint: disable=singleton-comparison

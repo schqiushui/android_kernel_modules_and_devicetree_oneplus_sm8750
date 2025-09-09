@@ -290,7 +290,7 @@ def ddk_module(
             - [`ddk_module`](#ddk_module)
             - [`ddk_headers`](#ddk_headers).
         hdrs: See [`ddk_headers.hdrs`](#ddk_headers-hdrs)
-        textual_hdrs: See [`ddk_headers.textual_hdrs`](#ddk_headers-textual_hdrs)
+        textual_hdrs: See [`ddk_headers.textual_hdrs`](#ddk_headers-textual_hdrs). DEPRECATED. Use `hdrs`.
         includes: See [`ddk_headers.includes`](#ddk_headers-includes)
         linux_includes: See [`ddk_headers.linux_includes`](#ddk_headers-linux_includes)
 
@@ -439,14 +439,19 @@ def ddk_module(
           [here](https://docs.bazel.build/versions/main/be/common-definitions.html#common-attributes).
     """
 
+    if textual_hdrs:
+        # buildifier: disable=print
+        print("\nWARNING: textual_hdrs deprecated, use `hdrs` instead.")
+
+    module_hdrs = (hdrs or []) + (textual_hdrs or [])
+
     ddk_config(
         name = name + "_config",
         defconfig = defconfig,
         kconfig = kconfig,
         kernel_build = kernel_build,
         module_deps = deps,
-        module_hdrs = hdrs,
-        module_textual_hdrs = textual_hdrs,
+        module_hdrs = module_hdrs,
         generate_btf = generate_btf,
     )
 
@@ -479,8 +484,7 @@ def ddk_module(
     makefiles(
         name = name + "_makefiles",
         module_srcs = (srcs or []) + flattened_conditional_srcs,
-        module_hdrs = hdrs,
-        module_textual_hdrs = textual_hdrs,
+        module_hdrs = module_hdrs,
         module_includes = includes,
         module_linux_includes = linux_includes,
         module_out = out,

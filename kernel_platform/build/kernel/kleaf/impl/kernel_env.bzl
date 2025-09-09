@@ -229,6 +229,11 @@ def _kernel_env_impl(ctx):
     else:
         bin_dir_and_workspace_root = ctx.bin_dir.path
 
+    if ctx.file.clang_autofdo_profile:
+        set_clang_autofdo_profile_cmd = "export CLANG_AUTOFDO_PROFILE=${ROOT_DIR}/" + ctx.file.clang_autofdo_profile.path
+    else:
+        set_clang_autofdo_profile_cmd = ""
+
     command += """
         # create a build environment
           source {build_utils_sh}
@@ -238,6 +243,7 @@ def _kernel_env_impl(ctx):
           {check_arch_cmd}
         # Variables from resolved toolchain
           {toolchains_setup_env_var_cmd}
+          {set_clang_autofdo_profile_cmd}
         # TODO(b/236012223) Remove the warning after deprecation.
           {make_goals_deprecation_warning}
         # Enforce check configs.
@@ -283,6 +289,7 @@ def _kernel_env_impl(ctx):
         setup_env = setup_env.path,
         check_arch_cmd = _get_check_arch_cmd(ctx),
         toolchains_setup_env_var_cmd = toolchains.setup_env_var_cmd,
+        set_clang_autofdo_profile_cmd = set_clang_autofdo_profile_cmd,
         make_goals_deprecation_warning = make_goals_deprecation_warning,
         kconfig_werror_setup = kconfig_werror_setup,
         out = out_file.path,
@@ -326,6 +333,8 @@ def _kernel_env_impl(ctx):
     ]
     if kconfig_ext:
         setup_inputs.append(kconfig_ext)
+    if ctx.file.clang_autofdo_profile:
+        setup_inputs.append(ctx.file.clang_autofdo_profile)
     setup_inputs += dtstree_srcs
 
     run_env = _get_run_env(ctx, srcs, toolchains)
@@ -657,6 +666,7 @@ kernel_env = rule(
             values = ["true", "false", "auto"],
         ),
         "make_goals": attr.string_list(doc = "`MAKE_GOALS`"),
+        "clang_autofdo_profile": attr.label(allow_single_file = True),
         "_rust_tools": attr.label_list(default = _get_rust_tools, allow_files = True),
         "_build_utils_sh": attr.label(
             allow_single_file = True,

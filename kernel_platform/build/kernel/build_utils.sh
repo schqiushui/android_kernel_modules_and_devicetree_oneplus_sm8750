@@ -342,11 +342,14 @@ function build_flattened_dlkm_image() {
   # Copy modules aliases definitions
   cp $(find ${staging_dir} -name "modules.alias") ${staging_dir}/flatten/lib/modules
   # Remove existing paths leaving just basenames
-  sed -i 's/kernel[^:[:space:]]*\/\([^:[:space:]]*\.ko\)/\1/g' ${staging_dir}/flatten/lib/modules/modules.dep
+  sed -i 's/\(kernel\|extra\)[^:[:space:]]*\/\([^:[:space:]]*\.ko\)/\2/g' ${staging_dir}/flatten/lib/modules/modules.dep
   # Prefix /system/lib/modules/ for every module
   sed -i "s#\([^:[:space:]]*\.ko\)#/${image_type}/lib/modules/\1#g" ${staging_dir}/flatten/lib/modules/modules.dep
   cp $(find ${staging_dir} -name "modules.load") ${staging_dir}/flatten/lib/modules
   sed -i 's#.*/##' ${staging_dir}/flatten/lib/modules/modules.load
+  # Copy the flattened version of modules.load to the dist directory to be
+  # consistent with the non-flattened output.
+  cp ${staging_dir}/flatten/lib/modules/modules.load ${dist_dir}/${image_type}_dlkm.flatten.modules.load
 
   build_image "${staging_dir}/flatten" "${props_file}" \
   "${dist_dir}/${image_name}" /dev/null
@@ -638,12 +641,9 @@ function build_boot_images() {
   fi
 
   DTB_FILE_LIST=$(find ${DIST_DIR} -name "*.dtb" | sort)
-  if [ -z "${DTB_FILE_LIST}" ]; then
-    if [ -z "${SKIP_VENDOR_BOOT}" ]; then
-      echo "ERROR: No *.dtb files found in ${DIST_DIR}" >&2
-      exit 1
-    fi
-  else
+  if [ -n "${DTB_IMAGE}" ]; then
+    MKBOOTIMG_ARGS+=("--dtb" "${DTB_IMAGE}")
+  elif [ -n "${DTB_FILE_LIST}" ]; then
     cat $DTB_FILE_LIST > ${DIST_DIR}/dtb.img
     MKBOOTIMG_ARGS+=("--dtb" "${DIST_DIR}/dtb.img")
   fi
@@ -1007,10 +1007,37 @@ function build_gki_artifacts() {
 
 function sort_config() {
   # Normal sort won't work because all the "# CONFIG_.. is not set" would come
-  # before all the "CONFIG_..=m". Use sed to extract the CONFIG_ option and prefix
-  # the line in front of the line to create a key (e.g. CONFIG_.. # CONFIG_.. is not set),
-  # sort, then remove the key
-  sed -E -e 's/.*(CONFIG_[^ =]+).*/\1 \0/' $1 | sort -k1 | cut -F2-
+  # before all the "CONFIG_..=m".
+
+  python3 -c '
+import re, sys
+PATTERN_UNSET=re.compile(r"^# (?P<key>CONFIG_\w+) is not set$")
+PATTERN_SET=re.compile(r"^(?P<key>CONFIG_\w+)=.*$")
+current_lines = {}
+for line in sys.stdin:
+  if not line.strip():
+    # Put new lines at the end. "Z" > "CONFIG_xxx"
+    current_lines["Z"] = line
+    continue
+
+  mo = None
+  for pattern in (PATTERN_UNSET, PATTERN_SET):
+    mo = pattern.match(line)
+    if mo:
+      current_lines[mo.group("key")] = line
+      break
+  if mo:
+    continue
+
+  # conclude section
+  sys.stdout.write("".join(value for _, value in sorted(current_lines.items())))
+  current_lines.clear()
+  sys.stdout.write(line)
+
+# conclude the last section
+sys.stdout.write("".join(value for _, value in sorted(current_lines.items())))
+current_lines.clear()
+' < $1
 }
 
 function menuconfig() {

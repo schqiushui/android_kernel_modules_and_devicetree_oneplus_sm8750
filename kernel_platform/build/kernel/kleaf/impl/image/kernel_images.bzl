@@ -42,6 +42,7 @@ def kernel_images(
         build_system_dlkm = None,
         build_system_dlkm_flatten = None,
         build_dtbo = None,
+        build_vendor_dtb = None,
         dtbo_srcs = None,
         dtbo_config = None,
         mkbootimg = None,
@@ -198,6 +199,8 @@ def kernel_images(
 
           If `dtbo_srcs` is non-empty, `build_dtbo` is `True` by default. Otherwise it is `False`
           by default.
+        build_vendor_dtb: Whether to build `dtb.img` when building any boot images. For compatibility reasons
+            it is True by default when building any boot image.
         dtbo_srcs: list of `*.dtbo` files used to package the `dtbo.img`. Keep this in sync
           with `MKDTIMG_DTBOS`; see example below.
 
@@ -365,10 +368,9 @@ def kernel_images(
                 ramdisk_compression,
                 ramdisk_compression_args,
             ).ramdisk_ext
-            boot_image_outs = [
-                "dtb.img",
-                ramdisk_out,
-            ]
+            boot_image_outs = [ramdisk_out]
+            if build_vendor_dtb == None or build_vendor_dtb:
+                boot_image_outs.append("dtb.img")
 
     boot_image_outs = list(boot_image_outs)
 

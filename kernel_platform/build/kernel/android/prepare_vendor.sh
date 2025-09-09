@@ -392,10 +392,20 @@ if [ "${COPY_NEEDED}" == "1" ]; then
     cp ${ANDROID_KP_OUT_DIR}/dist/modules.load ${ANDROID_KERNEL_OUT}/modules.load
   fi
 
+  unprotected_dlkm_kos=$(mktemp)
+  if [ -e "${ANDROID_KP_OUT_DIR}"/dist/vendor_dlkm.modules.unprotectedlist ]; then
+    tr " " "\n" < "${ANDROID_KP_OUT_DIR}"/dist/vendor_dlkm.modules.unprotectedlist | \
+    xargs -L 1 basename | \
+    xargs -L 1 find "${ANDROID_KP_OUT_DIR}"/dist/ -name > "${unprotected_dlkm_kos}"
+  else
+    echo "  vendor_dlkm.modules.unprotectedlist file is not found or is empty"
+  fi
+
   system_dlkm_kos=$(mktemp)
   if [ -s ${ANDROID_KP_OUT_DIR}/dist/system_dlkm.modules.load ]; then
     xargs -L 1 -a "${ANDROID_KP_OUT_DIR}/dist/system_dlkm.modules.load" basename | \
-    sed -e "s|^|${ANDROID_KP_OUT_DIR}/dist/|g" > "$system_dlkm_kos"
+    sed -e "s|^|${ANDROID_KP_OUT_DIR}/dist/|g" | \
+    grep -v -F -f "${unprotected_dlkm_kos}" > "$system_dlkm_kos"
   else
     echo "  system_dlkm_kos.modules.load file is not found or is empty"
   fi
@@ -479,6 +489,7 @@ if [ "${COPY_NEEDED}" == "1" ]; then
   fi
 
   rm ${first_stage_kos}
+  rm "${unprotected_dlkm_kos}"
   rm ${system_dlkm_kos}
   echo "kpl-time-check kernel copy end $(date +%H:%M:%S)"
 fi

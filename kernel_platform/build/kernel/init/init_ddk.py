@@ -29,6 +29,7 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+from typing import Any
 import urllib.parse
 
 from init.init_errors import KleafProjectSetterError
@@ -56,10 +57,11 @@ kernel_prebuilt_ext = use_extension(
     "kernel_prebuilt_ext",
 )
 kernel_prebuilt_ext.declare_kernel_prebuilts(
-    name = "gki_prebuilts",
+    name = "{repo_name}",
     local_artifact_path = "{prebuilts_dir_relative}",
+    target = "{bazel_target_name}",
 )
-use_repo(kernel_prebuilt_ext, "gki_prebuilts")
+use_repo(kernel_prebuilt_ext, "{repo_name}")
 """
 
 
@@ -79,7 +81,7 @@ class KleafProjectSetter:
 
     def __post_init__(self):
         """Initializes the KleafProjectSetter."""
-        self._download_list: dict[str, dict] = {}
+        self._ci_target_mapping: dict[str, Any] = {}
         self._repo_manifest_of_build: str | None = None
 
         # None: Git projects are not synced because they don't need to be.
@@ -246,6 +248,10 @@ class KleafProjectSetter:
         if self.prebuilts_dir:
             module_bazel_content += "\n"
             module_bazel_content += _LOCAL_PREBUILTS_CONTENT_TEMPLATE.format(
+                bazel_target_name=self._ci_target_mapping.get(
+                    "bazel_target_name", "kernel_aarch64"),
+                repo_name=self._ci_target_mapping.get("repo_name",
+                                                      "gki_prebuilts"),
                 # The prebuilts directory must be relative to the DDK workspace.
                 prebuilts_dir_relative=self._try_rel_workspace(
                     self.prebuilts_dir
@@ -344,11 +350,12 @@ class KleafProjectSetter:
     def _download_file_of_build(self, destination_directory: pathlib.Path,
                                 local_filename: str) -> None:
         """Downloads a file from the given build_id."""
-        if local_filename not in self._download_list:
+        if local_filename not in self._ci_target_mapping.get("download_configs",
+                                                             {}):
             raise KleafProjectSetterError(
                 f"ERROR: Can't find download spec for {local_filename}"
             )
-        config = self._download_list[local_filename]
+        config = self._ci_target_mapping["download_configs"][local_filename]
         remote_filename = config["remote_filename_fmt"].format(
             build_number=self.build_id,
         )
@@ -370,30 +377,41 @@ class KleafProjectSetter:
         else:
             yield None
 
-    def _load_download_list(self):
-        """Loads download_configs.json, possibly downloading it."""
+    def _load_ci_target_mapping(self):
+        """Loads ci_target_mapping.json, possibly downloading it."""
         can_download = self._can_download_artifacts()
         with self._get_meta_files_dir() as meta_files_dir:
             if not meta_files_dir:
                 return
 
             if can_download:
-                self._download_download_configs(meta_files_dir)
+                self._download_ci_target_mapping(meta_files_dir)
+
+            if (meta_files_dir / "ci_target_mapping.json").is_file():
+                with open(meta_files_dir / "ci_target_mapping.json", "r") as f:
+                    self._ci_target_mapping = json.load(f)
+                return
 
             with open(meta_files_dir / "download_configs.json", "r") as f:
-                self._download_list = json.load(f)
+                self._ci_target_mapping = {"download_configs": json.load(f)}
 
-    def _download_download_configs(self, meta_files_dir: pathlib.Path):
-        """Downloads download_configs.json"""
+    def _download_ci_target_mapping(self, meta_files_dir: pathlib.Path):
+        """Downloads ci_target_mapping.json"""
         if not self._can_download_artifacts():
             raise KleafProjectSetterError(
                 "ERROR: _download_meta_files_to called without --url_fmt set!"
             )
         meta_files_dir.mkdir(parents=True, exist_ok=True)
 
+        ci_target_mapping = meta_files_dir / "ci_target_mapping.json"
+        self._download("ci_target_mapping.json", ci_target_mapping,
+                       mandatory=False)
+        if ci_target_mapping.is_file():
+            return
+
+        # Legacy behavior: read download_configs.json as well.
         download_configs = meta_files_dir / "download_configs.json"
-        with open(download_configs, "w+", encoding="utf-8") as f:
-            self._download("download_configs.json", pathlib.Path(f.name))
+        self._download("download_configs.json", download_configs)
 
     def _download_prebuilts(self) -> None:
         """Downloads prebuilts from a given build_id when provided."""
@@ -404,7 +422,9 @@ class KleafProjectSetter:
         logging.info("Downloading prebuilts into %s", self.prebuilts_dir)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
-            for local_filename in self._download_list:
+            download_configs = self._ci_target_mapping.get("download_configs",
+                                                           {})
+            for local_filename in download_configs:
                 futures.append(
                     executor.submit(self._download_file_of_build,
                                     self.prebuilts_dir, local_filename)
@@ -534,7 +554,7 @@ class KleafProjectSetter:
 
     def run(self) -> None:
         self._handle_ddk_workspace()
-        self._load_download_list()
+        self._load_ci_target_mapping()
         self._handle_prebuilts()
         self._handle_kleaf_repo()
         self._symlink_tools_bazel()

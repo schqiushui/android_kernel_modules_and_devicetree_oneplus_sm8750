@@ -282,7 +282,7 @@ def _create_makefiles_artifact_test(
 
     if expected_cflags_lines:
         # Assume no submodules. For submodules, out == None
-        cflags_file_name = out.removesuffix(".ko") + ".cflags"
+        cflags_file_name = out.removesuffix(".ko") + ".cflags_shipped"
         write_file(
             name = name + "_expected_cflags",
             out = name + "_expected_cflags/{}".format(cflags_file_name),
@@ -598,7 +598,8 @@ def _makefiles_include_ordering_artifacts_test(name):
             "-I{}/linux_include/hdrs_b \\".format(prefix),
             # linux_include/hdrs_a is already specified, so dropping
             "$(LINUXINCLUDE)",
-            "CFLAGS_base.o += @{}/{}_base.cflags".format(prefix, name),
+            "CFLAGS_base.o += @$(obj)/{}_base.cflags".format(name),
+            "$(obj)/base.o: $(obj)/{}_base.cflags".format(name),
         ],
         expected_cflags_lines = [
             # local "includes"
