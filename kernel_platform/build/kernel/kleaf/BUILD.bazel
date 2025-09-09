@@ -31,20 +31,21 @@ string_flag(
 )
 
 # The final LTO setting is "default" (use defconfig value).
-# If --lto=default, and none of --kasan/--kcsan/--kasan_sw_tags/--kasan_generic/--debug, LTO is default
+# If --lto=default, and none of --ubsan/--kasan/--kcsan/--kasan_sw_tags/--kasan_generic/--debug, LTO is default
 selects.config_setting_group(
     name = "lto_is_default",
     match_all = [
         "//build/kernel/kleaf/impl:lto_is_set_to_default",
         ":kasan_is_false",
         ":kcsan_is_false",
+	":ubsan_is_false",
         ":debug_is_false",
     ],
     visibility = ["//visibility:public"],
 )
 
 # The final LTO setting is "none".
-# If --lto=none, or if --lto=default AND --kasan/--kcsan/--kasan_sw_tags/--kasan_generic/--debug, LTO should be set to none.
+# If --lto=none, or if --lto=default AND --ubsan/--kasan/--kcsan/--kasan_sw_tags/--kasan_generic/--debug, LTO should be set to none.
 selects.config_setting_group(
     name = "lto_is_none",
     match_any = [
@@ -241,6 +242,36 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# If true, enable ubsan.
+# This assumes --lto=none, but :print_flags only shows
+# values from the command line.
+bool_flag(
+    name = "ubsan",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+# UBSAN is enabled in the final build.
+# One of the following:
+# --ubsan --lto=default
+# --ubsan --lto=none
+selects.config_setting_group(
+    name = "ubsan_is_true",
+    match_all = [
+        "//build/kernel/kleaf/impl:lto_is_set_to_default_or_none",
+        "//build/kernel/kleaf/impl:ubsan_is_set_to_true",
+    ],
+    # All kernel_* from different packages can see this
+    visibility = ["//visibility:public"],
+)
+
+# --ubsan=false
+config_setting(
+    name = "ubsan_is_false",
+    flag_values = {":ubsan": "0"},
+    visibility = ["//visibility:public"],
+)
+
 # If true, //{common}:all_headers also includes //{common}:all_headers_unsafe.
 bool_flag(
     name = "allow_ddk_unsafe_headers",
@@ -258,6 +289,19 @@ bool_flag(
 config_setting(
     name = "gcov_is_true",
     flag_values = {":gcov": "1"},
+    visibility = ["//visibility:public"],
+)
+
+# If true, *.gcno files are collected.
+bool_flag(
+    name = "kocov",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "kocov_is_true",
+    flag_values = {":kocov": "1"},
     visibility = ["//visibility:public"],
 )
 
@@ -527,7 +571,7 @@ config_setting(
     visibility = ["//build/kernel:__pkg__"],
 )
 
-# If --lto=none, or if --kasan/--kcsan, LTO should be set to none.
+# If --lto=none, or if --ubsan/--kasan/--kcsan, LTO should be set to none.
 selects.config_setting_group(
     name = "debug_cache_dir_conflict_needs_flock",
     match_any = [
@@ -677,6 +721,7 @@ print_flags(
         ":kasan_sw_tags",
         ":kasan_generic",
         ":kcsan",
+	":ubsan",
         ":kbuild_symtypes",
         ":lto",
     ] + [":config_" + value for value in _config_values],

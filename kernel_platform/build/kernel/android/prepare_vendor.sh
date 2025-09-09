@@ -91,7 +91,7 @@
 # Currently only DTBs are compiled from folders matching this pattern:
 
 set -e
-
+OUT_DIR=""
 # rel_path <to> <from>
 # Generate relative directory path to reach directory <to> from <from>
 function rel_path() {
@@ -144,6 +144,23 @@ esac
 # Configure LTO
 if [ -n "$LTO" ]; then
   LTO_KBUILD_ARG="--lto=$LTO"
+fi
+
+if [ -n "$OPLUS_KERNEL_MODULE_COVERAGE" ]; then
+  GCOV_KBUILD_ARG="--kocov"
+fi
+
+if [ "$KERNEL_SANITIZER" == "kasan" ]; then
+  EXTRA_KBUILD_ARGS+=" --kasan_generic"
+  LTO_KBUILD_ARG="--lto=none"
+elif [ "$KERNEL_SANITIZER" == "kcsan" ]; then
+  EXTRA_KBUILD_ARGS+=" --kcsan"
+  LTO_KBUILD_ARG="--lto=none"
+fi
+
+if [ "$KERNEL_SANITIZER" == "ubsan" ]; then
+  EXTRA_KBUILD_ARGS+=" --ubsan"
+  LTO_KBUILD_ARG="--lto=none"
 fi
 
 ################################################################################
@@ -216,10 +233,22 @@ if [ "${RECOMPILE_KERNEL}" == "1" -o "${COPY_NEEDED}" == "1" ]; then
   rm -f ${ANDROID_KERNEL_OUT}/Image ${ANDROID_KERNEL_OUT}/vmlinux ${ANDROID_KERNEL_OUT}/System.map
 fi
 
+if [ -n "$OPLUS_KERNEL_STABILITY_DEBUG" ]; then
+  EXTRA_KBUILD_ARGS+=" --notrim --nokmi_symbol_list_strict_mode --nokmi_symbol_list_violations_check"
+  EXTRA_KBUILD_ARGS+=" --defconfig_fragment=//msm-kernel:arch/arm64/configs/oplus_debug_defconfig"
+fi
+
+################################################################################
+# Read environment variables and write to bzl file
+OPLUS_FEATURES=$(export|grep -e "^declare -x OPLUS_FEATURE_BSP_"|sed 's/declare -x //g'|sed 's/"//g'|tr '\n' ' ')
+# setup build parameters before building external modules
+./kernel_platform/oplus/bazel/oplus_modules_variant.sh ${KERNEL_TARGET} ${KERNEL_VARIANT} "${OPLUS_FEATURES}"
+
 ################################################################################
 if [ "${RECOMPILE_KERNEL}" == "1" ]; then
   echo
   echo "  Recompiling kernel"
+  echo "kpl-time-check kernel start $(date +%H:%M:%S)"
 
   if ([[ "$KERNEL_VARIANT" == "consolidate" ]] || [[ "$KERNEL_VARIANT" == "perf" ]]) && \
       [[ !$(grep -q "define_msm_la" "${ROOT_DIR}/msm-kernel/$KERNEL_TARGET.bzl") ]]; then
@@ -228,10 +257,11 @@ if [ "${RECOMPILE_KERNEL}" == "1" ]; then
 
   # shellcheck disable=SC2086
   "${ROOT_DIR}/build_with_bazel.py" \
-    -t "$KERNEL_TARGET" "$KERNEL_VARIANT" $LTO_KBUILD_ARG $EXTRA_KBUILD_ARGS \
+    -t "$KERNEL_TARGET" "$KERNEL_VARIANT" $LTO_KBUILD_ARG $GCOV_KBUILD_ARG $EXTRA_KBUILD_ARGS \
     --out_dir "${ANDROID_KP_OUT_DIR}"
 
   COPY_NEEDED=1
+  echo "kpl-time-check kernel end $(date +%H:%M:%S)"
 fi
 
 ################################################################################
@@ -240,11 +270,11 @@ ANDROID_ABL_OUT_DIR=${ANDROID_KERNEL_OUT}/kernel-abl
 
 if [ ! -e "${ANDROID_ABL_OUT_DIR}/abl-${TARGET_BUILD_VARIANT}/unsigned_abl.elf" ] || \
     ! diff -q "${ANDROID_ABL_OUT_DIR}/abl-${TARGET_BUILD_VARIANT}/unsigned_abl.elf" \
-  "${ANDROID_KP_OUT_DIR}/dist/unsigned_abl_${TARGET_BUILD_VARIANT}.elf" ; then
+  "${ANDROID_KP_OUT_DIR}/abl/unsigned_abl_${TARGET_BUILD_VARIANT}.elf" ; then
   COPY_ABL_NEEDED=1
 fi
 
-if [ ! -e "${ANDROID_KP_OUT_DIR}/dist/unsigned_abl_${TARGET_BUILD_VARIANT}.elf" ] && \
+if [ ! -e "${ANDROID_KP_OUT_DIR}/abl/unsigned_abl_${TARGET_BUILD_VARIANT}.elf" ] && \
    [ "${COPY_ABL_NEEDED}" == "1" ]; then
   RECOMPILE_ABL=1
 fi
@@ -258,20 +288,60 @@ if [ "${RECOMPILE_ABL}" == "1" ] && [ -n "${TARGET_BUILD_VARIANT}" ] && \
    [ "${KERNEL_TARGET}" != "autogvm" ]; then
   echo
   echo "  Recompiling edk2"
+  echo "kpl-time-check edk2 start $(date +%H:%M:%S)"
     (
       cd "${ROOT_DIR}"
 
-      ./tools/bazel run \
+      ./tools/bazel run "--incompatible_sandbox_hermetic_tmp=false" \
         --"//bootable/bootloader/edk2:target_build_variant=${TARGET_BUILD_VARIANT}" \
+        --"//bootable/bootloader/edk2:oplus_vnd_build_platform=${OPLUS_VND_BUILD_PLATFORM}" \
         "//msm-kernel:${KERNEL_TARGET}_${KERNEL_VARIANT}_abl_dist" \
-        -- --dist_dir "${ANDROID_KP_OUT_DIR}/dist"
+        -- --dist_dir "${ANDROID_KP_OUT_DIR}/abl"
     )
 
   COPY_ABL_NEEDED=1
+  echo "kpl-time-check edk2 end $(date +%H:%M:%S)"
 fi
+
+##################################oplus mixed build##############################################
+
+if [ "${RECOMPILE_EXT_MODULE}" != "0" ]; then
+    echo "kpl-time-check oplus DDK start $(date +%H:%M:%S)"
+    for file in Image vmlinux System.map .config Module.symvers build_opts.txt; do
+        cp ${ANDROID_KP_OUT_DIR}/dist/${file} ${ANDROID_KERNEL_OUT}/
+    done
+    echo
+    echo "   build oplus external modules : ${CHIPSET_COMPANY}"
+    (
+      cd ${ROOT_DIR}
+      set -x
+      if [[ -f "oplus/config/modules.ext.oplus" && "$(cat oplus/config/modules.ext.oplus | wc -l)" -gt 0 ]]; then
+        # setup build parameters before building external modules
+        ./oplus/bazel/oplus_modules_variant.sh ${KERNEL_TARGET} ${KERNEL_VARIANT} "${OPLUS_FEATURES}"
+        export CONFIG_OPLUS_FEATURE_MIXED_BUILD="y"
+        export CONFIG_OPLUS_FEATURE_MIXED_VND=${CHIPSET_COMPANY}
+        KBUILD_OPTIONS+=("CHIPSET_COMPANY=${CHIPSET_COMPANY}")
+        KBUILD_OPTIONS+=("OPLUS_VND_BUILD_PLATFORM=${OPLUS_VND_BUILD_PLATFORM}")
+        KBUILD_OPTIONS+=("OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST=${OPLUS_FEATURE_BSP_DRV_INJECT_TEST}")
+        if [ -z "${EXT_MODULES}" ];then
+            EXT_MODULES=$(cat oplus/config/modules.ext.oplus)
+        fi
+        EXT_MODULES=$EXT_MODULES\
+        KBUILD_OPTIONS=${KBUILD_OPTIONS[@]} \
+        OUT_DIR=${ANDROID_EXT_MODULES_OUT} \
+        KERNEL_KIT=${ANDROID_KERNEL_OUT} \
+        ./build/build_module.sh
+      fi
+    )
+    EXT_MODULES=""
+    COPY_NEEDED=1
+    echo "kpl-time-check oplus DDK end $(date +%H:%M:%S)"
+fi
+##########################oplus add mixed build#############################################
 
 ################################################################################
 if [ "${COPY_NEEDED}" == "1" ]; then
+  echo "kpl-time-check kernel copy start $(date +%H:%M:%S)"
   if [ ! -e "${ANDROID_KP_OUT_DIR}" ]; then
     echo "!! kernel platform output directory doesn't exist. Bad path or output wasn't copied?"
     exit 1
@@ -279,7 +349,25 @@ if [ "${COPY_NEEDED}" == "1" ]; then
 
   echo
   echo "  Preparing prebuilt folder ${ANDROID_KERNEL_OUT}"
+  #build kernel will delete ${ANDROID_KP_OUT_DIR}/dist/ and lost oplus DDK ko
+  #so move oplus module copy here
+  set -x
+  echo "mixedbuild oplus module copy"
+  # copy oplus external modules to dist directory and append to the end of the vendor_dlkm.modules.load
+  if [ -d ${ANDROID_KP_OUT_DIR}/../vendor/oplus ]; then
+      find ${ANDROID_KP_OUT_DIR}/../vendor/oplus -name "*.ko" | xargs -i cp {} ${ANDROID_KP_OUT_DIR}/dist/
+      find ${ANDROID_KP_OUT_DIR}/../vendor/oplus -name "*.ko" -printf "%f\n" > ${ANDROID_KP_OUT_DIR}/dist/oplus_modules_all
+      cat ${ANDROID_KP_OUT_DIR}/dist/oplus_modules_all ${ROOT_DIR}/oplus/config/modules.vendor_boot.list.oplus | sort | uniq -u > ${ANDROID_KP_OUT_DIR}/dist/oplus_modules_vendor_dlkm
 
+      if [ -e ${ANDROID_KP_OUT_DIR}/dist/vendor_dlkm.modules.load ]; then
+         cat ${ANDROID_KP_OUT_DIR}/dist/oplus_modules_vendor_dlkm  >> ${ANDROID_KP_OUT_DIR}/dist/vendor_dlkm.modules.load
+      fi
+
+      if [ -e ${ANDROID_KP_OUT_DIR}/dist/modules.load ]; then
+        cat ${ROOT_DIR}/oplus/config/modules.vendor_boot.list.oplus >> ${ANDROID_KP_OUT_DIR}/dist/modules.load
+      fi
+  fi
+  set +x
   first_stage_kos=$(mktemp)
   if [ -e ${ANDROID_KP_OUT_DIR}/dist/modules.load ]; then
     cat ${ANDROID_KP_OUT_DIR}/dist/modules.load | \
@@ -392,6 +480,7 @@ if [ "${COPY_NEEDED}" == "1" ]; then
 
   rm ${first_stage_kos}
   rm ${system_dlkm_kos}
+  echo "kpl-time-check kernel copy end $(date +%H:%M:%S)"
 fi
 
 
@@ -402,12 +491,12 @@ if [ "${COPY_ABL_NEEDED}" == "1" ]; then
   for variant in "${ABL_BUILD_VARIANT[@]}"
   do
     for file in LinuxLoader_${variant}.debug unsigned_abl_${variant}.elf ; do
-      if [ -e ${ANDROID_KP_OUT_DIR}/dist/${file} ]; then
+      if [ -e ${ANDROID_KP_OUT_DIR}/abl/${file} ]; then
         if [ ! -e "${ANDROID_ABL_OUT_DIR}/abl-${variant}" ]; then
           mkdir -p ${ANDROID_ABL_OUT_DIR}/abl-${variant}
         fi
         FILE_NAME=$(echo ${file} | sed 's/_'${variant}'//g')
-        cp ${ANDROID_KP_OUT_DIR}/dist/${file} ${ANDROID_ABL_OUT_DIR}/abl-${variant}/${FILE_NAME}
+        cp ${ANDROID_KP_OUT_DIR}/abl/${file} ${ANDROID_ABL_OUT_DIR}/abl-${variant}/${FILE_NAME}
       fi
     done
   done
@@ -449,6 +538,7 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
   ################################################################################
   echo
   echo "  Preparing UAPI headers for Android"
+  echo "kpl-time-check Preparing UAPI headers start $(date +%H:%M:%S)"
 
   if [ ! -e ${ANDROID_KERNEL_OUT}/kernel-uapi-headers.tar.gz ]; then
     echo "!! Did not find exported kernel UAPI headers"
@@ -469,6 +559,7 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
     arm64
   set +x
 
+  echo "kpl-time-check Preparing UAPI headers end $(date +%H:%M:%S)"
   # Intentionally aligned with Android's location in order to have a consistent location for output,
   # This isn't necessary from technical point, but helps to avoid making Android build system
   # redundantly do the same thing.
@@ -478,6 +569,7 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
   ################################################################################
   echo
   echo "  setting up Android tree for compiling modules"
+  echo "kpl-time-check setting up Android tree start $(date +%H:%M:%S)"
   (
     cd ${ROOT_DIR}
     set -x
@@ -486,45 +578,52 @@ if [ -n "${ANDROID_PRODUCT_OUT}" ] && [ -n "${ANDROID_BUILD_TOP}" ]; then
     ./build/build_module.sh
     set +x
   )
+  echo "kpl-time-check setting up Android tree end $(date +%H:%M:%S)"
 
   ################################################################################
   echo
-  echo "  Compiling vendor devicetree overlays"
+  if [ "${RECOMPILE_TECHPACK_DTBO}" != "0" ]; then
+    echo "  Compiling vendor devicetree overlays"
+    echo "kpl-time-check Compiling vendor devicetree start $(date +%H:%M:%S)"
+        for project in $(cd ${ANDROID_BUILD_TOP} && find -L vendor/ -type d -name "*-devicetree")
+        do
+            if [ ! -e "${project}/Makefile" ]; then
+              echo "${project} does not have expected build configuration files, skipping..."
+              continue
+            fi
 
-  for project in $(cd ${ANDROID_BUILD_TOP} && find -L vendor/ -type d -name "*-devicetree")
-  do
-    if [ ! -e "${project}/Makefile" ]; then
-      echo "${project} does not have expected build configuration files, skipping..."
-      continue
-    fi
+            echo "Building ${project}"
 
-    echo "Building ${project}"
+            (
+              cd ${ROOT_DIR}
+              set -x
+              OUT_DIR=${ANDROID_EXT_MODULES_OUT} \
+              EXT_MODULES="${KP_TO_ANDROID}/${project}" \
+              KERNEL_KIT=${ANDROID_KERNEL_OUT} \
+              ./build/build_module.sh dtbs
+              set +x
+            )
+        done
+        echo "kpl-time-check Compiling vendor devicetree end $(date +%H:%M:%S)"
+  fi
+  ################################################################################
+  echo
+  if [ "${RECOMPILE_MERGE_DTBS}" != "0" ]; then
+    echo "  Merging vendor devicetree overlays"
+
+    echo "kpl-time-check Merging vendor devicetree start $(date +%H:%M:%S)"
+    rm -rf ${ANDROID_KERNEL_OUT}/dtbs
+    mkdir ${ANDROID_KERNEL_OUT}/dtbs
 
     (
-      cd ${ROOT_DIR}
-      set -x
-      OUT_DIR=${ANDROID_EXT_MODULES_OUT} \
-      EXT_MODULES="${KP_TO_ANDROID}/${project}" \
-      KERNEL_KIT=${ANDROID_KERNEL_OUT} \
-      ./build/build_module.sh dtbs
-      set +x
+        cd ${ROOT_DIR}
+        OUT_DIR=${ANDROID_EXT_MODULES_OUT} ./build/android/merge_dtbs.sh \
+          ${ANDROID_KERNEL_OUT}/kp-dtbs \
+          ${ANDROID_EXT_MODULES_COMMON_OUT} \
+          ${ANDROID_KERNEL_OUT}/dtbs
     )
-  done
-
-  ################################################################################
-  echo
-  echo "  Merging vendor devicetree overlays"
-
-  rm -rf ${ANDROID_KERNEL_OUT}/dtbs
-  mkdir ${ANDROID_KERNEL_OUT}/dtbs
-
-  (
-    cd ${ROOT_DIR}
-    OUT_DIR=${ANDROID_EXT_MODULES_OUT} ./build/android/merge_dtbs.sh \
-      ${ANDROID_KERNEL_OUT}/kp-dtbs \
-      ${ANDROID_EXT_MODULES_COMMON_OUT} \
-      ${ANDROID_KERNEL_OUT}/dtbs
-  )
+    echo "kpl-time-check Merging vendor devicetree end $(date +%H:%M:%S)"
+  fi
 fi
 
 HOST_TOOLS=${ANDROID_EXT_MODULES_OUT}/msm-kernel/host_tools
@@ -536,3 +635,8 @@ fi
 
 # remove bazel dir to avoid build issues
 rm -rf ${ANDROID_BUILD_TOP}/kernel_platform/out/bazel
+
+if [ ! -d "${ANDROID_BUILD_TOP}/out" ];then
+    mkdir -p ${ANDROID_BUILD_TOP}/out
+fi
+cp -r ${ANDROID_KP_OUT_DIR}/* ${ANDROID_BUILD_TOP}/out/

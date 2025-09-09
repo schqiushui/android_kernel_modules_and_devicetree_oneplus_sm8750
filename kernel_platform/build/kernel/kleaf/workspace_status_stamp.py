@@ -67,6 +67,16 @@ class LocalversionResult(PathPopen):
             ret += self.suffix
         return ret
 
+def is_valid_build_number(value, max_length=12):
+    """
+    BUILD_NUMBER is export in vendor/oplus/build/ci/ap/oplus_ap_build.sh so we need check valid
+    Check whether the provided build number is non-empty and its length is less than the specified max_length.
+
+    :param value: The build number to check
+    :param max_length: The maximum allowed length of the build number, default is 10
+    :return: True if the build number is valid, False otherwise
+    """
+    return value.strip() and len(value) < max_length
 
 def get_localversion_from_script(bin: pathlib.Path | None, project: pathlib.Path, *args) \
         -> PathCollectible | None:
@@ -96,7 +106,7 @@ def get_localversion_from_script(bin: pathlib.Path | None, project: pathlib.Path
                                  env=env)
 
         suffix = None
-        if os.environ.get("BUILD_NUMBER"):
+        if os.environ.get("BUILD_NUMBER") and is_valid_build_number(os.environ["BUILD_NUMBER"]):
             suffix = "-ab" + os.environ["BUILD_NUMBER"]
         return LocalversionResult(
             path=project,
@@ -129,17 +139,11 @@ def get_localversion_from_git(project: pathlib.Path) -> PathCollectible | None:
         if head=$($GIT rev-parse --verify --short=12 HEAD 2>/dev/null); then
             echo -n -g"$head"
         fi
-        if {
-            $GIT --no-optional-locks status -uno --porcelain 2>/dev/null ||
-            $GIT diff-index --name-only HEAD
-        } | read placeholder; then
-            echo -n -dirty
-        fi
     """
     popen = subprocess.Popen(script, shell=True, text=True,
                              stdout=subprocess.PIPE, cwd=project)
     suffix = None
-    if os.environ.get("BUILD_NUMBER"):
+    if os.environ.get("BUILD_NUMBER") and is_valid_build_number(os.environ["BUILD_NUMBER"]):
         suffix = "-ab" + os.environ["BUILD_NUMBER"]
     return LocalversionResult(
         path=project,

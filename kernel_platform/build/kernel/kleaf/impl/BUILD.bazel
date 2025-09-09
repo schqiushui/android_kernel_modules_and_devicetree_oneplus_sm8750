@@ -233,6 +233,7 @@ selects.config_setting_group(
 # * --kasan_sw_tags
 # * --kasan_generic
 # * --kcsan
+# * --ubsan
 selects.config_setting_group(
     name = "lto_should_be_none",
     match_any = [
@@ -241,6 +242,7 @@ selects.config_setting_group(
         ":kasan_sw_tags_is_set_to_true",
         ":kasan_generic_is_set_to_true",
         ":kcsan_is_set_to_true",
+	":ubsan_is_set_to_true",
     ],
 )
 
@@ -250,6 +252,7 @@ selects.config_setting_group(
 # * --lto=default --kasan_sw_tags
 # * --lto=default --kasan_generic
 # * --lto=default --kcsan
+# * --lto=default --ubsan
 selects.config_setting_group(
     name = "lto_is_set_to_default_but_lto_should_be_none",
     match_all = [
@@ -285,6 +288,13 @@ config_setting(
 config_setting(
     name = "kcsan_is_set_to_true",
     flag_values = {"//build/kernel/kleaf:kcsan": "1"},
+    visibility = ["//visibility:public"],
+)
+
+# --ubsan
+config_setting(
+    name = "ubsan_is_set_to_true",
+    flag_values = {"//build/kernel/kleaf:ubsan": "1"},
     visibility = ["//visibility:public"],
 )
 

@@ -21,11 +21,17 @@ import shlex
 import shutil
 import sys
 import textwrap
+#oplus add remote cache rc
+import urllib.request
+#end
 from typing import BinaryIO, Generator, Tuple, Optional
 
 from kleaf_help import KleafHelpPrinter, FLAGS_BAZEL_RC
 
 _BAZEL_REL_PATH = "prebuilts/kernel-build-tools/bazel/linux-x86_64/bazel"
+#oplus add remote cache rc
+_BAZEL_RC_OPLUS_REMOTE_CACHE = "build/kernel/kleaf/bazelrc/oplus_rbe.bazelrc"
+#end
 
 # Sync with the following files:
 #   kleaf/impl/kernel_build.bzl
@@ -40,6 +46,28 @@ _QUERY_ABI_TARGETS_ARG = 'kind("(update_source_file|abi_update) rule", //... exc
 
 _REPO_BOUNDARY_FILES = ("MODULE.bazel", "REPO.bazel", "WORKSPACE.bazel", "WORKSPACE")
 
+#oplus add remote cache rc config when special env value is set
+def _check_bazel_server_status(url):
+      try:
+        response = urllib.request.urlopen(url)
+        if response.getcode() == 200:
+            return True
+        else:
+            return False
+      except urllib.error.URLError:
+        return False
+
+def _try_add_remote_cache_args(final_args,root_dir):
+        oplus_is_cache_build = os.environ.get("OPLUS_USE_JFROG_CACHE")
+        oplus_is_bb_build = os.environ.get("OPLUS_USE_BUILDBUDDY_REMOTE_BUILD")
+        if oplus_is_cache_build == "true" or oplus_is_bb_build == "true":
+            oplus_remote_cache_url="http://bazel-remote-cache.myoas.com:8083/status"
+            if _check_bazel_server_status(oplus_remote_cache_url):
+                final_args += [
+                    f"--bazelrc={root_dir}/{_BAZEL_RC_OPLUS_REMOTE_CACHE}",
+                ]
+        return final_args
+#end
 
 @dataclasses.dataclass
 class BazelWrapperException(Exception):
@@ -539,6 +567,9 @@ class BazelWrapper(KleafHelpPrinter):
 
         final_args = [self.bazel_path] + self.transformed_startup_options
 
+        #oplus add remote cache rc config when special env value is set
+        final_args = _try_add_remote_cache_args(final_args,self.kleaf_repo_dir)
+        #end
         if self.command is not None:
             final_args.append(self.command)
         final_args += self.transformed_command_args

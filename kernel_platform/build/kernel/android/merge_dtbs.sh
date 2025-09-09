@@ -40,9 +40,70 @@ rm -rf $3
 mkdir $3
 
 set -x
+#oplus add to ensurce bin's has 'x' permission
+chmod +x $(dirname $(type -p fdtget))/* > /dev/null 2>&1 || true
+#end
 $ROOT_DIR/build/android/merge_dtbs.py --base $1 --techpack $2 --out $3
 set +x
 
+function dtbo_pack_by_proj_name(){
+	pushd ${1}
+	#1. get project name, such as waffle...
+	proj_name=()
+	DTBO=$(find ./ -type f -name '*.dtbo' -print)
+	for dtbo in ${DTBO[@]}
+	do
+		#echo ".dtbo" $dtbo
+		prop=`basename $dtbo | cut -d "-" -f 1`
+		proj_name+=" "${prop}
+		#echo "proj_name" ${proj_name}
+	done
+	proj_name=($(awk -v RS=' ' '!a[$1]++' <<< ${proj_name[@]}))
+
+	#debug print project name
+	for e in ${proj_name[@]}
+	do
+		echo "proj_name2" ${e}
+	done
+
+	#2.get project number str  and  match dtbo list(.dtbo file for waffle...) + build dtbo
+	for name in ${proj_name[@]}
+	do
+		echo "start build" ${name}
+		proj_num=()
+		dtbo_list=()
+		for dtbo_tmp in ${DTBO[@]}
+		do
+			#echo "search DTBO"${dtbo_tmp}
+			if [[ "$(basename $dtbo_tmp | cut -d "-" -f 1)" =~ "${name}" ]];then
+				#echo "dtbo file name match" ${dtbo_tmp}
+				#get .dtbo list of project name
+				dtbo_list+=" "${dtbo_tmp}
+				#get project number of project name
+				prop=($(fdtget -t i ${dtbo_tmp} / oplus,project-id))
+				proj_num+=" "${prop[@]}
+			fi
+		done
+		proj_num=($(awk -v RS=' ' '!a[$1]++' <<< ${proj_num[@]}))
+		proj_num_str=''
+		for tmp in ${proj_num[@]}
+		do
+			if [ $tmp -gt 100000 ];then
+				proj_num_str+="-"`printf '%X' $tmp`
+			else
+				proj_num_str+="-"$tmp
+			fi
+		done
+		dtbo_name_str=${name}${proj_num_str}
+		#echo "dtbo list" ${dtbo_list}
+		#echo "dtbo_name_str"  ${dtbo_name_str}
+		echo "pack ${dtbo_name_str}-dtbo.img with ${dtbo_list[@]}"
+		mkdtboimg create ${dtbo_name_str}-dtbo.img --page_size=${PAGE_SIZE} ${dtbo_list[@]}
+	done
+	popd
+}
+dtbo_pack_by_proj_name ${3}
 [[ -n "$(find ${3} -type f -name '*.dtb')" ]] && cat ${3}/*.dtb > ${3}/dtb.img
-[[ -n "$(find ${3} -type f -name '*.dtbo')" ]] && mkdtboimg create ${3}/dtbo.img --page_size=${PAGE_SIZE} ${3}/*.dtbo
+#[[ -n "$(find ${3} -type f -name '*.dtbo')" ]] && mkdtboimg create ${3}/dtbo.img --page_size=${PAGE_SIZE} ${3}/*.dtbo
+[[ -n "$(find ${3} -type f -name '*dtbo.img')" ]] && (img=($(find ${3} -type f -name '*dtbo.img'));cp ${img[0]} ${3}/dtbo.img)
 exit 0

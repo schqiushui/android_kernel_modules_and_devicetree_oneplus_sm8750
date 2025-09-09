@@ -42,6 +42,38 @@ visibility("//build/kernel/kleaf/...")
 # Name of raw symbol list under $OUT_DIR
 _RAW_KMI_SYMBOL_LIST_BELOW_OUT_DIR = "abi_symbollist.raw"
 
+def _config_kernel_module_coverage(ctx):
+    """Return configs for KERNEL MODULE COVERAGE.
+
+    Args:
+        ctx: ctx
+    Returns:
+        A struct, where `configs` is a list of arguments to `scripts/config`,
+        and `deps` is a list of input files.
+    """
+    kocov = ctx.attr.kocov[BuildSettingInfo].value
+
+    if not kocov:
+        return []
+
+    # for fix ERROR: modpost: "llvm_gcda_start_file" [*.ko] undefined!
+    if trim_nonlisted_kmi_utils.get_value(ctx):
+        fail("{}: --kocov requires trimming to be disabled".format(ctx.label))
+
+    configs = [
+        _config.enable("KCOV"),
+        _config.enable("KCOV_ENABLE_COMPARISONS"),
+        _config.enable("GCOV_KERNEL"),
+        # TODO(b/291710318) Allow section mismatch when using GCOV_PROFILE_ALL
+        #  modpost: vmlinux.o: section mismatch in reference: cpumask_andnot (section: .text) -> efi_systab_phys (section: .init.data)
+        _config.enable("SECTION_MISMATCH_WARN_ONLY"),
+        # TODO: Re-enable when https://github.com/ClangBuiltLinux/linux/issues/1778 is fixed.
+        _config.disable("CFI_CLANG"),
+        # for fix Protected symbol: __sanitizer_cov_trace_pc (err -13)
+        _config.disable("MODULE_SIG_PROTECT"),
+    ]
+    return configs
+
 def _config_lto(ctx):
     """Return configs for LTO.
 
@@ -176,6 +208,7 @@ def _check_trimming_disabled(ctx):
         "kasan_sw_tags",
         "kasan_generic",
         "kcsan",
+        "ubsan",
     ):
         if getattr(ctx.attr, attr_name)[BuildSettingInfo].value:
             fail("{}: --{} requires trimming to be disabled".format(ctx.label, attr_name))
@@ -194,6 +227,7 @@ def _reconfig(ctx):
         _config_lto,
         _config_trim,
         _config_symbol_list,
+        _config_kernel_module_coverage,
         _config_keys,
         kgdb.get_scripts_config_args,
     ):

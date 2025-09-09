@@ -21,6 +21,8 @@ _FORCE_DISABLE_TRIM_IS_TRUE = "//build/kernel/kleaf/impl:force_disable_trim_is_t
 _GCOV_IS_TRUE = "//build/kernel/kleaf:gcov_is_true"
 _KASAN_IS_TRUE = "//build/kernel/kleaf:kasan_is_true"
 _KCSAN_IS_TRUE = "//build/kernel/kleaf:kcsan_is_true"
+_UBSAN_IS_TRUE = "//build/kernel/kleaf:ubsan_is_true"
+_KOCOV_IS_TRUE = "//build/kernel/kleaf:kocov_is_true"
 TRIM_NONLISTED_KMI_ATTR_NAME = "trim_nonlisted_kmi"
 
 def _selected_attr(attr_val):
@@ -29,6 +31,8 @@ def _selected_attr(attr_val):
         Label(_GCOV_IS_TRUE): False,
         Label(_KASAN_IS_TRUE): False,
         Label(_KCSAN_IS_TRUE): False,
+	Label(_UBSAN_IS_TRUE): False,
+        Label(_KOCOV_IS_TRUE): False,
         "//conditions:default": attr_val,
     })
 

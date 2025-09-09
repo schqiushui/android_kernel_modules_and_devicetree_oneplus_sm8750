@@ -432,6 +432,7 @@ def kernel_build(
             - `["kasan_sw_tags"]`
             - `["kasan_generic"]`
             - `["kcsan"]`
+	    - `["ubsan"]`
         ddk_module_defconfig_fragments: A list of additional defconfigs, to be used
           in `ddk_module`s building against this kernel.
           Unlike `defconfig_fragments`, `ddk_module_defconfig_fragments` is not applied
@@ -724,6 +725,8 @@ def _skip_build_checks(ctx, what):
         "kasan_sw_tags",
         "kasan_generic",
         "kcsan",
+        "ubsan",
+        "kocov",
         "kgdb",
         "debug",
         "gcov",
@@ -839,6 +842,7 @@ def _get_defconfig_fragments(
             Label("//build/kernel/kleaf/impl:kasan_sw_tags_is_set_to_true"): "kasan_sw_tags",
             Label("//build/kernel/kleaf/impl:kasan_generic_is_set_to_true"): "kasan_generic",
             Label("//build/kernel/kleaf/impl:kcsan_is_set_to_true"): "kcsan",
+	    Label("//build/kernel/kleaf/impl:ubsan_is_set_to_true"): "ubsan",
             "//conditions:default": None,
         }),
         second_selector = kernel_build_sanitizer,
@@ -848,6 +852,7 @@ def _get_defconfig_fragments(
             Label("//build/kernel/kleaf/impl/defconfig:{}_kasan_sw_tags".format(kernel_build_arch)): "kasan_sw_tags",
             Label("//build/kernel/kleaf/impl/defconfig:kasan_generic"): "kasan_generic",
             Label("//build/kernel/kleaf/impl/defconfig:kcsan"): "kcsan",
+            Label("//build/kernel/kleaf/impl/defconfig:ubsan"): "ubsan",
             Label("//build/kernel/kleaf/impl:empty_filegroup"): "default",
         },
         **internal_kwargs
@@ -2127,6 +2132,8 @@ _kernel_build = rule(
         "_warn_undeclared_modules": attr.label(default = "//build/kernel/kleaf:warn_undeclared_modules"),
         "_preserve_cmd": attr.label(default = "//build/kernel/kleaf/impl:preserve_cmd"),
         "_kmi_symbol_list_violations_check": attr.label(default = "//build/kernel/kleaf:kmi_symbol_list_violations_check"),
+        "_kocov": attr.label(default = "//build/kernel/kleaf:kocov"),
+        "_gcov": attr.label(default = "//build/kernel/kleaf:gcov"),
         # Though these rules are unrelated to the `_kernel_build` rule, they are added as fake
         # dependencies so KernelBuildExtModuleInfo and KernelBuildUapiInfo works.
         # There are no real dependencies. Bazel does not build these targets before building the

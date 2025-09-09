@@ -59,7 +59,7 @@ def _write_localversion(ctx):
         stable_scmversion_cmd = _get_status_at_path(ctx, "STABLE_SCMVERSIONS", '"${KERNEL_DIR}"')
     else:
         inputs = []
-        stable_scmversion_cmd = "echo '-maybe-dirty'"
+        stable_scmversion_cmd = "echo ''"
 
     transitive_inputs = [ctx.attr.env[KernelEnvInfo].inputs]
     tools = ctx.attr.env[KernelEnvInfo].tools
@@ -84,12 +84,13 @@ def _write_localversion(ctx):
                 exit 1
             fi
             scmversion=""
+            oki_infix="o"
             stable_scmversion=$({stable_scmversion_cmd})
             scmversion_prefix=
             if [[ -n "$android_release" ]] && [[ -n "$KMI_GENERATION" ]]; then
-                scmversion_prefix="-$android_release-$KMI_GENERATION"
+                scmversion_prefix="-$android_release-$KMI_GENERATION-$oki_infix"
             elif [[ -n "$android_release" ]]; then
-                scmversion_prefix="-$android_release"
+                scmversion_prefix="-$android_release-$oki_infix"
             fi
             scmversion="${{scmversion_prefix}}${{stable_scmversion}}"
             echo $scmversion

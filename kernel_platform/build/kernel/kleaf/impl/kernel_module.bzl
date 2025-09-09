@@ -747,6 +747,8 @@ _kernel_module = rule(
             executable = True,
         ),
         "_config_is_stamp": attr.label(default = "//build/kernel/kleaf:config_stamp"),
+        "_kocov": attr.label(default = "//build/kernel/kleaf:kocov"),
+        "_gcov": attr.label(default = "//build/kernel/kleaf:gcov"),
         "_preserve_cmd": attr.label(default = "//build/kernel/kleaf/impl:preserve_cmd"),
         "_debug_print_scripts": attr.label(default = "//build/kernel/kleaf:debug_print_scripts"),
         "_debug_modpost_warn": attr.label(default = "//build/kernel/kleaf:debug_modpost_warn"),

@@ -169,6 +169,21 @@ fail_action(
 )
 
 filegroup(
+    name = "ubsan",
+    srcs = select({
+        "//build/kernel/kleaf/impl:lto_is_set_to_default_or_none": ["ubsan_defconfig"],
+        "//conditions:default": [":fail_ubsan_lto"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+fail_action(
+    name = "fail_ubsan_lto",
+    message = "--ubsan requires --lto=none or default.",
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
     name = "signing_modules_disabled",
     srcs = ["signing_modules_disabled_defconfig"],
     visibility = ["//visibility:public"],

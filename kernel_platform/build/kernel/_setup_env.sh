@@ -287,3 +287,21 @@ function check_defconfig() {
     return ${RES}
 }
 export -f check_defconfig
+
+function setup_local_env() {
+    O_SOURCE_DIR="${ROOT_DIR%source*}source"
+    OPLUS_CI_LOCAL_DIR="${O_SOURCE_DIR}/oplus_ci_out/local"
+    echo "start setup local env"
+    if [ -e $OPLUS_CI_LOCAL_DIR/local_vnd_env.sh ]; then
+        source $OPLUS_CI_LOCAL_DIR/local_vnd_env.sh
+    fi
+    echo ROOT_DIR=${ROOT_DIR}
+    echo OUT_DIR=${OUT_DIR}
+    echo O_SOURCE_DIR=${O_SOURCE_DIR}
+    echo OPLUS_CI_LOCAL_DIR=${OPLUS_CI_LOCAL_DIR}
+
+    echo OPLUS_USE_PREBUILT_BOOTIMAGE=${OPLUS_USE_PREBUILT_BOOTIMAGE}
+
+    echo "end of setup local env"
+}
+setup_local_env
