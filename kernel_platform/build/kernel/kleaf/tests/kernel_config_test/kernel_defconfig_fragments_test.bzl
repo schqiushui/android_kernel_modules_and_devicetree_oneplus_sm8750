@@ -309,6 +309,11 @@ def kernel_defconfig_fragments_test(name):
         )
         tests.append(name_arch + "_test")
 
+    _nocheck_test(
+        name = name + "_nocheck_test",
+    )
+    tests.append(name + "_nocheck_test")
+
     native.test_suite(
         name = name,
         tests = tests,
@@ -343,4 +348,46 @@ def _add(flag_values_configs_1, flag_values_configs_2):
     return _FlagValuesConfigs(
         flag_values = flag_values_configs_1.flag_values + flag_values_configs_2.flag_values,
         configs = flag_values_configs_1.configs + flag_values_configs_2.configs,
+    )
+
+def _nocheck_test(name):
+    write_file(
+        name = name + "_defconfig_fragment",
+        out = name + "_defconfig_fragment.txt",
+        content = [
+            "CONFIG_LOG_BUF_SHIFT=14 # nocheck: for testing",
+            "",  # end file with new line
+        ],
+    )
+    kernel_build(
+        name = name + "_kernel_build",
+        srcs = [Label("//common:kernel_aarch64_sources")],
+        arch = "arm64",
+        build_config = "//common:build.config.gki.aarch64",
+        defconfig_fragments = [name + "_defconfig_fragment"],
+        outs = [],
+        make_goals = ["Image"],
+        tags = ["manual"],
+    )
+
+    _get_config(
+        name = name + "_actual",
+        kernel_build = name + "_kernel_build",
+        tags = ["manual"],
+    )
+
+    write_file(
+        name = name + "_expected",
+        out = name + "_expected/.config",
+        content = [
+            "CONFIG_LOG_BUF_SHIFT=14",
+            "",
+        ],
+        tags = ["manual"],
+    )
+
+    contain_lines_test(
+        name = name,
+        expected = name + "_expected",
+        actual = name + "_actual",
     )

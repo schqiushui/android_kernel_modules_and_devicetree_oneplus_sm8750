@@ -99,7 +99,7 @@ int main(int argc, char* argv[]) {
   }
   new_argv.push_back(nullptr);
 
-  if (-1 != execv(real_executable.c_str(), new_argv.data())) {
+  if (-1 == execv(real_executable.c_str(), new_argv.data())) {
     int saved_errno = errno;
     std::cerr << "ERROR: execv: " << real_executable << ": "
               << strerror(saved_errno) << std::endl;
