@@ -15,9 +15,10 @@
 # limitations under the License.
 
 import argparse
+import concurrent.futures
+import dataclasses
 import datetime
 import hashlib
-import json
 import logging
 import os
 import pathlib
@@ -27,6 +28,8 @@ import sys
 import tempfile
 import typing
 
+import kernel_processing
+
 '''
 # Purpose
 
@@ -34,37 +37,38 @@ Compare two GKI distributions, a freshly-built one and a given one.
 
 # Operation
 
-From a distribution
+Per distribution:
 
-* identify binary artefacts
-  * label them
-     * module.ko
-     * boot image contained some kind of kernel
-     * kernel, possibly compressed
-     * vmlinux
-* identify compressed files
-    * decompress them to obtain the original artefact
-    * the compressed artefact is valid if the decompressed one is
-* identify archives
-  * unpack them to find further artefacts
-  * the archive is valid if its contained artefacts are valid
-* identify canonicalisable artefacts
-  * canonicalise them
-  * the non-canonical artefact is valid if the canonical one is
+* find binary artefacts
+   * boot image containing a kernel image, possibly compressed
+   * module.ko, signed
+   * kernel image, possibly compressed
+   * vmlinux
+   * system dlkm filesystem image
+* process each artefact to generate derived artefacts
+   * decompress compressed kernel image
+   * unpack file system image
+   * extract kernel from boot image, checking ramdisk is empty
+   * convert vmlinux to image
+   * strip trailing module signature
+   * blank kernel module signing certificate
+   * blank kernel image build ID
+   * optionally strip debug information
+   * optionally strip BTF information
+* each artefact -> derived artefact process creates an edge in a graph
+   * except for system dlkm image unpacking
 
-At each stage, perform incidental verification of things like metadata.
-
-Every file is hashed.
+Every artefact file is hashed (SHA256, truncated to 12 characters).
 
 We now have a collection (per distribution) of artefacts, each has:
 
-* label name
-* file hash
-* file name on disk
+* a logical name
+* a file hash
+* one or more file names
 
-And we have edges between "equivalent" artefacts.
+And we have edges from "original" to "equivalent" artefacts.
 
-Between the two sides, files are matched by label and SHA256.
+Between the two sides, files are matched by logical name and hash.
 
 Anything on the given side with no path to the built side is considered
 to be "unverified".
@@ -74,146 +78,85 @@ to be "unverified".
 7z - unpack ext4 filesystem images
 fsck.erofs - unpack erofs images
 git - get common commit hash, for informational purposes
-llvm-objcopy - convert vmlinux to an Image; strip ELF objects
-llvm-readelf - extract symbol information from vmlinux
+llvm-objcopy - convert vmlinux to Image; trim module signature; remove ELF sections
 '''
 
-def _get_name_or_value(entry: dict):
-    '''Returns the first value available in a dict entry between name and value.
+def blank_kernel_build_ID(kernel: bytearray) -> None:
+    '''Blank the kernel build ID.
 
-    This is needed to do the correct lookup given that different versions of
-    llvm-readelf structure the information differently.
-
-    Args:
-       entry: An entry from a json dictionary.
+    The kernel has a single section containing 3 notes, the last of
+    which has the GNU build ID. The ID consists of 20 random bytes.
     '''
-    return entry.get('Name', entry.get('Value'))
+    regex = (
+        rb'\x06\x00\x00\x00\x01\x00\x00\x00\x00\x01\x00\x00Linux\x00\x00\x00\x00\x00\x00\x00'
+        rb'\x06\x00\x00\x00\x04\x00\x00\x00\x01\x01\x00\x00Linux\x00\x00\x00\x00\x00\x00\x00'
+        rb'\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00.{20}'
+    )
+    found = re.search(regex, kernel, flags=re.DOTALL)
+    if not found:
+        raise ValueError('no kernel notes found')
+    kernel[found.end() - 20:found.end()] = bytearray(20)
 
-def get_vmlinux_info(vmlinux: pathlib.Path):
-    _WANTED_SYMBOLS = {
-        '__module_cert_start',
-        '__module_cert_end',
-        'linux_banner',
-    }
-    _NOTES_SUFFIX_LENGTH = 20
 
-    readelf = subprocess.check_output(['llvm-readelf', '--elf-output-style=JSON', '-S', '-s', vmlinux])
+def blank_kernel_module_certificate(kernel: bytearray) -> None:
+    '''The start of the ASN.1 module signing certificate looks like this.
 
-    # we supply 1 file, we get a list of size 1
-    [elf] = json.loads(readelf)
-
-    class SectionInfo(typing.NamedTuple):
-        address: int
-        offset: int
-        size: int
-
-    class SymbolInfo(typing.NamedTuple):
-        section: str
-        address: int
-        size: int
-
-    sections = dict()
-    elf_sections = elf['Sections']
-    for elf_section_dict in elf_sections:
-        elf_section = elf_section_dict['Section']
-        name = _get_name_or_value(elf_section['Name'])
-        address = elf_section['Address']
-        offset = elf_section['Offset']
-        size = elf_section['Size']
-        sections[name] = SectionInfo(address, offset, size)
-
-    symbols = dict()
-    elf_symbols = elf['Symbols']
-    for elf_symbol_dict in elf_symbols:
-        elf_symbol = elf_symbol_dict['Symbol']
-        name = _get_name_or_value(elf_symbol['Name'])
-        if name in _WANTED_SYMBOLS:
-            value = elf_symbol['Value']
-            size = elf_symbol['Size']
-            section_name = _get_name_or_value(elf_symbol['Section'])
-            symbols[name] = SymbolInfo(section_name, value, size)
-
-    def symbol_range(symbol: str):
-        symbol_info = symbols[symbol]
-        section_info = sections[symbol_info.section]
-        start = section_info.offset + symbol_info.address - section_info.address
-        return start, start + symbol_info.size
-
-    def inter_symbol_range(start: str, finish: str):
-        start_info = symbols[start]
-        finish_info = symbols[finish]
-        if start_info.section != finish_info.section:
-            raise ValueError(f'{start} and {finish} are in different ELF sections')
-        section_info = sections[start_info.section]
-        range_start = section_info.offset + start_info.address - section_info.address
-        range_finish = section_info.offset + finish_info.address - section_info.address
-        return range_start, range_finish
-
-    notes = sections['.notes']
-    if notes.size < _NOTES_SUFFIX_LENGTH:
-        raise ValueError(f'.notes section size {notes.size} < {_NOTES_SUFFIX_LENGTH}')
-    notes_limit = notes.offset + notes.size
-    notes_range = (notes_limit - _NOTES_SUFFIX_LENGTH, notes_limit)
-
-    module_range = inter_symbol_range('__module_cert_start', '__module_cert_end')
-    banner_range = symbol_range('linux_banner')
-
-    return (banner_range, [notes_range, module_range])
+    SEQUENCE 30 82 hi lo
+      SEQUENCE 30 82 hi lo
+        CONTEXT[0] a0 03
+          INTEGER 02 01 02 (2, meaning version 3)
+        INTEGER 02 lo bytes (serial number, 1 to 20 bytes)
+        SEQUENCE 30 0d (signature)
+          OID 06 09 2a 86 48 86 f7 0d 01 01 05 (algorithm = sha1WithRSAEncryption)
+          NULL 05 00 (parameters)
+        SEQUENCE 30 2e (rdnSequence)
+          SET 31 2c
+            SEQUENCE 30 2a
+              OID 06 03 55 04 03 (type = commonName)
+              UTF8STRING 0c 23 "Build time autogenerated kernel key"
+    '''
+    regex = (
+        rb'\x30\x82(..)\x30\x82..\xa0\x03\x02\x01\x02\x02(.)(.{1,20})'
+        rb'\x30\x0d\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x05\x05\x00'
+        rb'\x30\x2e\x31\x2c\x30\x2a\x06\x03\x55\x04\x03\x0c\x23Build time autogenerated kernel key'
+    );
+    found = re.search(regex, kernel, flags=re.DOTALL)
+    if not found:
+        raise ValueError('no kernel module signing certificate found')
+    length_bytes, serial_length_bytes, serial = found.group(1, 2, 3)
+    serial_length = int.from_bytes(serial_length_bytes, 'big')
+    if serial_length != len(serial):
+        raise ValueError('serial number length mismatch')
+    length = 4 + int.from_bytes(length_bytes, 'big')
+    kernel[found.start():found.start() + length] = bytearray(length)
 
 
 def hash_file(path: pathlib.Path) -> str:
     with path.open('rb') as f:
-        return hashlib.file_digest(f, 'sha256').hexdigest()
+        return hashlib.file_digest(f, 'sha256').hexdigest()[0:12]
 
 
-def parse_banner(which: str, banner: bytes) -> tuple[str, str, str, str, int]:
-    if m := re.fullmatch(rb'Linux version (?P<release>[^(\n\0]*) \([^\n\0]*\) (?P<version>#\d+ [^\n\0]*)\n\0', banner):
-        release, version = m.group('release', 'version')
-        release = release.decode()
-        version = version.decode()
-    else:
-        raise ValueError(f'bad {which} linux_banner: {banner}')
+def get_kernel_information(which: str, kernel: bytes) -> tuple[str, str, str, str, int]:
+    banner_info = kernel_processing.get_linux_banner(kernel)
 
-    if m := re.fullmatch(r'^[^-]*-[^-]*-[^-]*-([^-]*)(.*)$', release):
-        scmversion, trailer = m.group(1, 2)
-    else:
-        raise ValueError(f'bad {which} UTS_RELEASE {release}')
-
-    commit = None
-    if m := re.fullmatch(r'g(.*)', scmversion):
-        commit = m.group(1)
-
-    build = None
-    if m := re.fullmatch(r'-ab([^-]*).*', trailer):
-        build = m.group(1)
-
-    if m := re.fullmatch(r'#\d+ (?:(?:SMP|PREEMPT)\ )*(.*)', version):
-        date = m.group(1)
-    else:
-        raise ValueError(f'bad {which} UTS_VERSION {version}')
-
-    # we don't want to mess with TZ and LC_TIME, so do this by hand
-    match = re.fullmatch(r'(?:\w{3}) (\w{3}) {1,2}(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) UTC (\d{4})', date)
-    if not match:
-        raise ValueError(f'bad date: {date}')
-    month, day, hour, minute, second, year = match.group(1, 2, 3, 4, 5, 6)
-    month_number = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12};
-    dt = datetime.datetime(int(year), month_number[month], int(day), int(hour), int(minute), int(second), tzinfo=datetime.timezone.utc)
-    # round floating point timestamp to the nearest second
-    epoch = int(dt.timestamp() + 0.5)
-
-    print(f'''{which} version information:
+    print('''{which} version information:
     banner: {banner}
-    release: {release}
+    release: {uts_release}
     scmversion: {scmversion}
     commit: {commit}
     build: {build}
-    version: {version}
+    version: {uts_version}
     date: {date}
     epoch: {epoch}
-''')
+'''.format(which=which, **dataclasses.asdict(banner_info)))
 
-    return release, version, commit, build, epoch
+    return (
+        banner_info.uts_release,
+        banner_info.uts_version,
+        banner_info.commit,
+        banner_info.build,
+        banner_info.epoch,
+    )
 
 
 class Info(typing.NamedTuple):
@@ -223,94 +166,84 @@ class Info(typing.NamedTuple):
     commit: str
     build: str
     epoch: int
-    variable_ranges: list[tuple[int, int]]
     working_directory: pathlib.Path
-    nodes: dict[str, str]
-    edges: dict[str, str]
+    nodes: dict[str, set[str]]
+    edges: dict[str, set[tuple[str, str]]]
 
 
-def add_artefact(info: Info, name: str, path: pathlib.Path, provenance: str) -> str:
+def add_artefact(info: Info, name: str, path: pathlib.Path) -> str:
     sha = hash_file(path)
     key = f'{name}:{sha}'
     nodes = info.nodes
     if key in nodes:
-        nodes[key] = nodes[key] + ' | ' + provenance
+        nodes[key].add(path)
     else:
-        nodes[key] = provenance
+        nodes[key] = set([path])
+        info.edges[key] = set()
     return key
 
 
-def add_edge(info: Info, key1: str, key2: str) -> None:
-    edges = info.edges
-    edges.add((key1, key2))
-    edges.add((key2, key1))
-
-
-def process_kernel(gki: pathlib.Path, info: Info, kernel: str) -> None:
-    kernel_path = info.distribution / kernel
-    if not kernel_path.exists():
+def add_edge(info: Info, key1: str, key2: str, label: str) -> None:
+    if key1 == key2:
+        logging.warning(f'ignoring attempt to add loop: {key1} --{label}-> {key2}')
         return
-    key1 = add_artefact(info, kernel, kernel_path, kernel)
+    info.edges[key1].add((key2, label))
+
+
+def process_kernel(gki: pathlib.Path, info: Info, kernel: str, kernel_path: pathlib.Path) -> str:
+    key1 = add_artefact(info, kernel, kernel_path)
     _DECOMPRESSORS = {
         'Image': None,
         'Image.gz': gki / 'prebuilts' / 'build-tools' / 'path' / 'linux-x86' / 'gzip',
         'Image.lz4': gki / 'prebuilts' / 'kernel-build-tools' / 'linux-x86' / 'bin' / 'lz4',
     }
     decompressor = _DECOMPRESSORS[kernel]
-    if decompressor == None:
-        return
-    uncompressed_path = info.working_directory / (kernel + '.uncompressed')
-    with uncompressed_path.open('wb') as f:
-        subprocess.check_call([decompressor, '-d', '-c', '--', kernel_path], stdout=f)
-        key2 = add_artefact(info, 'Image', uncompressed_path, f'decompressed {kernel}')
-        add_edge(info, key1, key2)
+    if decompressor is not None:
+        uncompressed_path = info.working_directory / (kernel + '.uncompressed')
+        with uncompressed_path.open('wb') as f:
+            subprocess.check_call([decompressor, '-d', '-c', '--', kernel_path], stdout=f)
+            key2 = add_artefact(info, 'Image', uncompressed_path)
+            add_edge(info, key1, key2, 'decompress')
+    return key1
 
 
 def create_kernel(vmlinux: pathlib.Path, kernel: pathlib.Path) -> None:
     subprocess.check_call(['llvm-objcopy', '-S', '-O', 'binary', vmlinux, kernel])
 
 
-def canonicalise_vmlinux(info: Info, original: pathlib.Path, canonical: pathlib.Path) -> None:
+def canonicalise_kernel(info: Info, original: pathlib.Path, canonical: pathlib.Path) -> None:
     array = bytearray(original.read_bytes())
-
-    for start, limit in info.variable_ranges:
-        logging.debug(f'start={start} limit={limit}')
-        for i in range(start, limit):
-            array[i] = 0  # b'\0' does not work
-
-    with canonical.open('wb') as f:
-        f.write(array)
+    blank_kernel_build_ID(array)
+    blank_kernel_module_certificate(array)
+    canonical.write_bytes(array)
 
 
 def process_vmlinux(info: Info, copy_args) -> None:
     vmlinux_path = info.distribution / 'vmlinux'
-    key1 = add_artefact(info, 'vmlinux', vmlinux_path, 'vmlinux')
+    key1 = add_artefact(info, 'vmlinux', vmlinux_path)
 
-    recreated_kernel = info.working_directory / 'vmlinux.Image'
-    create_kernel(vmlinux_path, recreated_kernel)
-    key2 = add_artefact(info, 'Image', recreated_kernel, f'Image recreated from vmlinux')
-    add_edge(info, key1, key2)
+    recreated_kernel_path = info.working_directory / 'vmlinux.Image'
+    create_kernel(vmlinux_path, recreated_kernel_path)
+    key2 = add_artefact(info, 'Image', recreated_kernel_path)
+    add_edge(info, key1, key2, 'make image')
 
     canonical_vmlinux_path = info.working_directory / 'vmlinux.canonical'
-    canonicalise_vmlinux(info, vmlinux_path, canonical_vmlinux_path)
-    key3 = add_artefact(info, 'vmlinux', canonical_vmlinux_path, f'canonical vmlinux from vmlinux')
-    add_edge(info, key1, key3)
+    canonicalise_kernel(info, vmlinux_path, canonical_vmlinux_path)
+    key3 = add_artefact(info, 'vmlinux', canonical_vmlinux_path)
+    add_edge(info, key1, key3, 'canonicalise')
 
-    canonical_kernel_path = info.working_directory / 'vmlinux.canonical.Image'
-    create_kernel(canonical_vmlinux_path, canonical_kernel_path)
-    key4 = add_artefact(info, 'Image', canonical_kernel_path, f'Image recreated from canonical vmlinux from vmlinux')
-    add_edge(info, key3, key4)
+    canonical_kernel_path = info.working_directory / 'vmlinux.Image.canonical'
+    canonicalise_kernel(info, recreated_kernel_path, canonical_kernel_path)
+    key4 = add_artefact(info, 'Image', canonical_kernel_path)
+    add_edge(info, key2, key4, 'canonicalise')
 
-    copied_canonical_vmlinux_path = info.working_directory / 'vmlinux.canonical.copied'
+    copied_canonical_vmlinux_path = info.working_directory / 'vmlinux.canonical.objcopy'
     subprocess.run(['llvm-objcopy', *copy_args, canonical_vmlinux_path, copied_canonical_vmlinux_path], check=True)
-    key5 = add_artefact(info, 'vmlinux', copied_canonical_vmlinux_path, f'objcopied from canonical vmlinux from vmlinux')
-    add_edge(info, key3, key5)
+    key5 = add_artefact(info, 'vmlinux', copied_canonical_vmlinux_path)
+    add_edge(info, key3, key5, 'objcopy')
 
 
-def process_boot_image(gki: pathlib.Path, info: Info, kernel: str, boot_image: str) -> None:
-    boot_image_path = info.distribution / boot_image
-    if not os.path.exists(boot_image_path):
-        return
+def process_boot_image(gki: pathlib.Path, info: Info, kernel: str, boot_image: str, boot_image_path: pathlib.Path) -> None:
     unpacked = info.working_directory / (boot_image + '.unpacked')
     subprocess.check_call([gki / 'tools' / 'mkbootimg' / 'unpack_bootimg.py',
                            '--boot_img', boot_image_path, '--format', 'info', '--out', unpacked],
@@ -318,59 +251,70 @@ def process_boot_image(gki: pathlib.Path, info: Info, kernel: str, boot_image: s
     ramdisk_file = unpacked / 'ramdisk'
     kernel_file =  unpacked / 'kernel'
     if os.stat(ramdisk_file).st_size > 0:
-        logging.error(f'bad ramdisk {ramdisk_file} extracted from {boot_image}')
-    key1 = add_artefact(info, boot_image, boot_image_path, boot_image)
-    key2 = add_artefact(info, kernel, kernel_file, f'{kernel} extracted from {boot_image}')
-    add_edge(info, key1, key2)
-    # TODO: decompress kernels extracted from boot images
+        logging.error(f'non-empty ramdisk {ramdisk_file} from {boot_image}')
+    key1 = add_artefact(info, boot_image, boot_image_path)
+    key2 = process_kernel(gki, info, kernel, kernel_file)
+    add_edge(info, key1, key2, 'extract')
 
 
-def process_system_dlkm(info: Info, copy_args: list[str], system_dlkm: str, unpacked: pathlib.Path) -> None:
+def process_module(info: Info, copy_args: list[str], root_path: pathlib.Path, module_name: str) -> None:
+    module_path = root_path / module_name
+    key1 = add_artefact(info, module_name, module_path)
+    copied_path = root_path / (module_name + '.objcopy')
+    subprocess.check_call(['llvm-objcopy', *copy_args, module_path, copied_path])
+    key2 = add_artefact(info, module_name, copied_path)
+    add_edge(info, key1, key2, 'objcopy')
+
+
+def process_system_dlkm(info: Info, copy_args: list[str], unpacked: pathlib.Path) -> None:
     for root, dirs, files in os.walk(unpacked):
-        for module_name in files:
-            if module_name.endswith('.ko'):
+        for name in files:
+            if name.endswith('.ko'):
                 root_path = pathlib.Path(root)
-                module_path = root_path / module_name
-                key1 = add_artefact(info, module_name, module_path, f'extracted from {system_dlkm}')
-                copied_path = root_path / (module_name + '.copied')
-                subprocess.check_call(['llvm-objcopy', *copy_args, module_path, copied_path])
-                key2 = add_artefact(info, module_name, copied_path, f'objcopied from {module_name} extracted from {system_dlkm}')
-                add_edge(info, key1, key2)
+                process_module(info, copy_args, root_path, name)
 
 
 def process_distribution(gki: pathlib.Path, info: Info, copy_args: list[str]) -> None:
     process_vmlinux(info, copy_args)
+
     _BOOT_IMAGES = {
         'Image': 'boot.img',
         'Image.gz': 'boot-gz.img',
         'Image.lz4': 'boot-lz4.img',
     }
     for kernel, boot_image in _BOOT_IMAGES.items():
-        process_kernel(gki, info, kernel)
-        process_boot_image(gki, info, kernel, boot_image)
+        kernel_path = info.distribution / kernel
+        if kernel_path.exists():
+            process_kernel(gki, info, kernel, kernel_path)
+        boot_image_path = info.distribution / boot_image
+        if boot_image_path.exists():
+            process_boot_image(gki, info, kernel, boot_image, boot_image_path)
+
     _FILESYSTEMS = {
         'erofs' : lambda archive, unpacked: ['fsck.erofs', f'--extract={unpacked}', '--', archive],
         'ext4' : lambda archive, unpacked: ['7z', f'-o{unpacked}', 'x', archive],
     }
-    for system_dlkm in os.listdir(info.distribution):
-        if m := re.fullmatch(r'system_dlkm.*\.(erofs|ext4)\.img', system_dlkm):
+    for name in os.listdir(info.distribution):
+        if name.endswith('.ko'):
+            pathlib.Path(info.working_directory / name).write_bytes(
+                pathlib.Path(info.distribution / name).read_bytes())
+            process_module(info, copy_args, info.working_directory, name)
+        elif m := re.fullmatch(r'system_dlkm.*\.(erofs|ext4)\.img', name):
             fs = m.group(1)
-            archive = info.distribution / system_dlkm
-            unpacked = info.working_directory / (system_dlkm + '.unpacked')
+            archive = info.distribution / name
+            unpacked = info.working_directory / (name + '.unpacked')
             unpack = _FILESYSTEMS[fs](archive, unpacked)
             subprocess.check_call(unpack, stdout=subprocess.DEVNULL)
-            process_system_dlkm(info, copy_args, system_dlkm, unpacked)
+            process_system_dlkm(info, copy_args, unpacked)
 
 
 def initialise_side(side: str, distribution: pathlib.Path, temporary_path: pathlib.Path) -> Info:
     vmlinux = distribution / 'vmlinux'
-    banner_range, variable_ranges = get_vmlinux_info(vmlinux)
     vmlinux_bytes = vmlinux.read_bytes()
-    banner_bytes = vmlinux_bytes[banner_range[0]:banner_range[1]]
-    release, version, commit, build, epoch = parse_banner(side, banner_bytes)
+    release, version, commit, build, epoch = get_kernel_information(side, vmlinux_bytes)
     working_directory = temporary_path / side
     os.mkdir(working_directory)
-    return Info(distribution, release, version, commit, build, epoch, variable_ranges, working_directory, {}, set())
+    return Info(distribution, release, version, commit, build, epoch, working_directory, {}, {})
 
 
 def compare_metadata(gki: pathlib.Path, built: Info, given: Info):
@@ -390,8 +334,9 @@ def compare_metadata(gki: pathlib.Path, built: Info, given: Info):
 
 def build_gki(gki: pathlib.Path, commit: str, build: str, epoch: int) -> pathlib.Path:
     if commit is not None:
+        # 12 character SHA as requested by Kleaf
         gki_commit = subprocess.check_output(
-            ['git', 'rev-parse', '--short', 'HEAD'],
+            ['git', 'rev-parse', '--short=12', 'HEAD'],
             cwd=gki / 'common', text=True).rstrip('\n')
         if commit != gki_commit:
             logging.warning(f'mismatched commits: {commit} != {gki_commit}')
@@ -404,46 +349,39 @@ def build_gki(gki: pathlib.Path, commit: str, build: str, epoch: int) -> pathlib
     return gki / 'out_abi' / 'kernel_aarch64' / 'dist'
 
 
-def report_artefacts(built_nodes, given_nodes, given_edges) -> bool:
-    good_nodes = set(p for p in given_nodes if p in built_nodes)
+def partition(predicate, items):
+    result = ([], [])
+    for element in items:
+        result[predicate(element)].append(element)
+    return result
 
-    print('verified artefacts:')
-    for g in good_nodes:
-        print(f' {g} {given_nodes[g]} <- {built_nodes[g]}')
+def report_artefacts(built_nodes, given_nodes, given_edges, happy: str, sad: str) -> int:
+    def is_good(memo: dict[str, bool], node: str) -> bool:
+        if node not in memo:
+            memo[node] = any(is_good(memo, n) for n, label in given_edges[node])
+        return memo[node]
 
-    while True:
-        todo = False
-        for node in sorted(given_nodes.keys()):
-            if node in good_nodes:
-                continue
-            found_edge = False
-            for good in good_nodes:
-                if (good, node) in given_edges:
-                    found_edge = True
-                    print(f' {node} {given_nodes[node]} <- {good} {given_nodes[good]}')
-                    break
-            if found_edge:
-                good_nodes.add(node)
-                todo = True
-        if not todo:
-            break
+    memo = {node: True for node in built_nodes}
+    check = lambda n: is_good(memo, n)
+    bad_nodes, good_nodes = partition(check, sorted(given_nodes.keys()))
 
-    bad_nodes = set(p for p in given_nodes if p not in good_nodes)
-
-    if bad_nodes:
+    if good_nodes:
+        print(f'{len(good_nodes)} {happy} artefacts')
         print()
-        print('unverified artefacts:')
-        for node in sorted(bad_nodes):
-            print(f' {node} {given_nodes[node]}')
+    if bad_nodes:
+        print(f'{len(bad_nodes)} {sad} artefacts:')
+        for node in bad_nodes:
+            files = ' '.join(sorted(map(str, given_nodes[node])))
+            print(f'  {node} ({files})')
+            for other, label in given_edges[node]:
+                print(f'    --{label}-> {other}')
+        print()
 
-    print()
-    print(f'{len(good_nodes)} verified, {len(bad_nodes)} unverified artefacts')
-
-    return not bad_nodes
+    return len(bad_nodes)
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--strip-btf', action='store_true')
@@ -458,7 +396,7 @@ def main() -> int:
     given_path = args.given
     copy_args = []
     if args.strip_debug:
-        copy_args.append('-S')
+        copy_args.append('--strip-debug')
     if args.strip_btf:
         copy_args.extend(['-R', '.BTF', '-R', '.BTF_ids'])
 
@@ -476,16 +414,23 @@ def main() -> int:
 
         compare_metadata(gki_path, given, built)
 
-        for info in given, built:
-            process_distribution(gki_path, info, copy_args)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(process_distribution, gki_path, info, copy_args)
+                for info in [given, built]
+            ]
+            for f in futures:
+                f.result()
 
-        if report_artefacts(built.nodes, given.nodes, given.edges):
-            build_ID = hashlib.sha256(given.release.encode()).hexdigest()
-            print(f'verified build ID: {build_ID}')
-            return 0
+        problems = (report_artefacts(given.nodes, built.nodes, built.edges, 'present', 'missing') +
+                    report_artefacts(built.nodes, given.nodes, given.edges, 'verified', 'unverified'))
+        if problems > 0:
+            input(f'temporary working directory is {t}; press enter to exit')
+            return 1
 
-        input(f'temporary working directory is {t}, press enter to exit')
-        return 1
+        build_ID = hashlib.sha256(given.release.encode()).hexdigest()
+        print(f'verified build ID: {build_ID}')
+        return 0
 
 
 if __name__ == '__main__':
